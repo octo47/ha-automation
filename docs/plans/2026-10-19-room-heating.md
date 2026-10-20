@@ -94,11 +94,14 @@ These inputs are not in the spec's tables. Each one has a test in the task that 
 
 ### Task 1: Repository scaffold, import guard and licence
 
+`tests/__init__.py` makes the test directory a package, so a later test file can import a helper
+from another test file with `from .test_coordinator import setup_entry`.
+
 **Files:**
 - Create: `pyproject.toml`, `Makefile`, `.gitignore`, `hacs.json`, `LICENSE`
 - Create: `custom_components/room_climate/__init__.py`, `const.py`, `manifest.json`
 - Create: `custom_components/room_climate/translations/en.json`
-- Create: `tests/conftest.py`, `tests/test_package_layout.py`
+- Create: `tests/__init__.py`, `tests/conftest.py`, `tests/test_package_layout.py`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -1886,9 +1889,13 @@ git commit -m "add the cycle decision"
 - Modify: `custom_components/room_climate/__init__.py`
 - Test: `tests/test_coordinator.py`
 
+The coordinator's tests drive a cycle through the coordinator itself: the virtual climate entity
+arrives in Task 10, and the `room_climate.recompute` service arrives in Task 12. The service-based
+test of the service lives in Task 12.
+
 **Interfaces:**
 - Consumes: `decide`, `HouseConfig.from_options`, `ControlOutput`.
-- Produces: `RoomClimateCoordinator(hass, entry, config)` with the attributes `config`,
+- Produces: `RoomClimateCoordinator(hass, entry, config)`, stored on `entry.runtime_data`, with the attributes `config`,
   `output`, `runtimes`, `last_actuator_targets`, `last_calibration_values`,
   `last_command_at`, `master_enabled`, `override_active`, and the methods
   `async_start()`, `async_stop()`, `async_recompute()`, `async_release_boiler()`. The `data`
@@ -1902,12 +1909,11 @@ git commit -m "add the cycle decision"
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
-
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
+from custom_components.room_climate.models import RuntimeRoom
 
 
 def options(**overrides: object) -> dict[str, object]:
@@ -1948,11 +1954,18 @@ def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict]:
     ]
 
 
+async def set_room_target(entry: MockConfigEntry, room_id: str, temperature: float) -> None:
+    """Set the setpoint of one room through the coordinator, without the climate entity."""
+    coordinator = entry.runtime_data
+    coordinator.runtimes[room_id] = RuntimeRoom(
+        room_id=room_id, target_temperature=temperature, hvac_mode="heat"
+    )
+    await coordinator.async_recompute()
+
+
 async def test_a_call_for_heat_commands_the_valve_and_the_boiler(hass: HomeAssistant) -> None:
     entry = await setup_entry(hass, dry_run=False)
-    await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
-    )
+    await set_room_target(entry, "front_room", 21.0)
     await hass.async_block_till_done()
 
     boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
@@ -1971,12 +1984,13 @@ async def test_the_calibration_feed_is_written(hass: HomeAssistant) -> None:
 
 
 async def test_dry_run_sends_no_command(hass: HomeAssistant) -> None:
-    await setup_entry(hass, dry_run=True)
-    with patch("homeassistant.core.ServiceRegistry.async_call", new=AsyncMock()) as call:
-        await hass.services.async_call("room_climate", "recompute", {})
-        await hass.async_block_till_done()
-    assert not [item for item in call.await_args_list if item.args[:1] == ("climate",)]
-    assert not [item for item in call.await_args_list if item.args[:1] == ("number",)]
+    entry = await setup_entry(hass, dry_run=True)
+    await set_room_target(entry, "front_room", 21.0)
+    await hass.async_block_till_done()
+    assert calls_for(hass, "set_temperature", "climate.trv_front_room") == []
+    assert calls_for(hass, "set_temperature", "climate.heating_heat") == []
+    assert hass.services.async_calls("number", "set_value") == []
+    assert entry.runtime_data.output is not None
 
 
 async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssistant) -> None:
@@ -2002,13 +2016,10 @@ async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssi
     hass.states.async_set("climate.trv_side_room_b", "heat", {"temperature": 5.0})
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    await hass.services.async_call(
-        "climate",
-        "set_temperature",
-        {"entity_id": "climate.room_climate_side_room", "temperature": 21.0},
-    )
+    await set_room_target(entry, "side_room", 21.0)
     await hass.async_block_till_done()
     assert calls_for(hass, "set_temperature", "climate.trv_side_room_b")
+    assert calls_for(hass, "set_temperature", "climate.trv_side_room_a") == []
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
