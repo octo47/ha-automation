@@ -47,6 +47,9 @@ Copy these rules into every task brief. They come from the spec and from the rep
 - The domain is `room_climate`. The manifest requires `"version"`, because HACS updates a
   custom integration by the version.
 - The manifest declares `requirements: ["pydantic>=2.11,<3"]` and no custom integration.
+- The live regression drives the simulation house of the spec's section 7.4 before it drives a real
+  valve. The one live write to a real valve is the feed-scale confirmation of the spec's section 8.2
+  step 3, and the operator performs it.
 
 ## Environment facts that constrain the tasks
 
@@ -58,7 +61,7 @@ Copy these rules into every task brief. They come from the spec and from the rep
 - One Hive TRV publishes `climate.<name>`, `sensor.<name>_local_temperature`,
   `binary_sensor.<name>_heat_required`, `sensor.<name>_window_open_internal` and
   `number.<name>_external_measured_room_sensor`. Entity ids in the tests must match that shape.
-- The live instance has HACS and Better Thermostat 1.9.3. Task 13 removes Better Thermostat
+- The live instance has HACS and Better Thermostat 1.9.3. Task 14 removes Better Thermostat
   after the component works.
 
 ## Review Focus
@@ -78,6 +81,9 @@ These inputs are not in the spec's tables. Each one has a test in the task that 
    switch off must not be deferred.
 6. A calibration write must never reach a valve of another room, and it must not repeat while
    the room temperature moves less than 0.1 °C.
+7. A simulated entry must reject a room entity without the `sim_` prefix, and it must command
+   only virtual entities. On the bench the valve position follows the gap between the target and
+   the fed temperature, and the virtual boiler fires only above 30 °C.
 
 ---
 
@@ -227,6 +233,8 @@ CALIBRATION_MIN_TEMPERATURE = 5.0
 CALIBRATION_MAX_TEMPERATURE = 35.0
 CALIBRATION_TOLERANCE_C = 0.1
 SETPOINT_STEP = 0.5
+WINDOW_OPEN_STATES = ("open", "on")
+SIM_MARKER = "sim_"
 REPEAT_THRESHOLD = 0.25
 MIN_PLAUSIBLE_TEMPERATURE = -20.0
 MAX_PLAUSIBLE_TEMPERATURE = 60.0
@@ -411,6 +419,52 @@ def test_from_options_round_trips_the_entry_payload() -> None:
     assert config.rooms[0].calibration == "external_sensor"
     assert config.rooms[0].valve_mode == "modulate"
     assert config.dry_run is True
+    assert config.simulation is False
+
+
+def sim_options(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "simulation": True,
+        "boiler_entity": "climate.sim_boiler",
+        "outdoor_sources": ["number.sim_outdoor_temperature"],
+        "rooms": [
+            {
+                "room_id": "front_room",
+                "name": "Front Room",
+                "valves": ["climate.sim_front_room_valve"],
+                "sources": [{"entity_id": "number.sim_front_room_room_temperature"}],
+            }
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_a_simulated_house_accepts_the_virtual_entities() -> None:
+    config = HouseConfig.from_options(sim_options())
+    assert config.simulation is True
+    assert config.rooms[0].valves == ("climate.sim_front_room_valve",)
+
+
+def test_a_simulated_house_rejects_a_real_entity() -> None:
+    payload = sim_options(
+        rooms=[
+            {
+                "room_id": "front_room",
+                "name": "Front Room",
+                "valves": ["climate.trv_front_room"],
+                "sources": [{"entity_id": "number.sim_front_room_room_temperature"}],
+            }
+        ]
+    )
+    with pytest.raises(ValidationError) as error:
+        HouseConfig.from_options(payload)
+    assert "climate.trv_front_room" in str(error.value)
+
+
+def test_a_simulated_house_rejects_a_real_boiler() -> None:
+    with pytest.raises(ValidationError):
+        HouseConfig.from_options(sim_options(boiler_entity="climate.heating_heat"))
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -449,6 +503,7 @@ from .const import (
     DEFAULT_OUTDOOR_SOURCES,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
+    SIM_MARKER,
     VALVE_MODE_MODULATE,
 )
 
@@ -517,6 +572,7 @@ class HouseConfig(BaseModel):
     dry_run: bool = True
     master_enabled: bool = True
     ema_seconds: int = Field(default=DEFAULT_EMA_SECONDS, ge=60, le=10800)
+    simulation: bool = False
     rooms: tuple[RoomConfig, ...] = ()
 
     @model_validator(mode="after")
@@ -525,6 +581,18 @@ class HouseConfig(BaseModel):
             raise ValueError("boiler_on_temperature must exceed boiler_off_temperature")
         if not self.outdoor_sources:
             raise ValueError("at least one outdoor source is required")
+        if self.simulation:
+            for entity_id in (
+                self.boiler_entity,
+                *self.outdoor_sources,
+                *(
+                    item
+                    for room in self.rooms
+                    for item in (*room.valves, *(source.entity_id for source in room.sources))
+                ),
+            ):
+                if SIM_MARKER not in entity_id:
+                    raise ValueError(f"a simulated house cannot name {entity_id}")
         seen: dict[str, str] = {}
         for room in self.rooms:
             for entity_id in (room.room_id, *room.valves):
@@ -1492,6 +1560,16 @@ def test_a_window_open_closes_the_valve_without_waiting() -> None:
     assert front_room.valve_targets == {"climate.trv_front_room": 5.0}
 
 
+def test_a_switch_style_window_sensor_also_suspends_the_demand() -> None:
+    config = house(rooms=(room("front_room", window_sensors=("switch.sim_front_room_window",)), room("back_room")))
+    output = decide(
+        payload(house=config, window_states={"switch.sim_front_room_window": "on"})
+    )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.window_open is True
+    assert front_room.calling is False
+
+
 def test_a_room_without_a_source_is_degraded_and_closed() -> None:
     output = decide(
         payload(
@@ -1566,6 +1644,7 @@ from .const import (
     STATUS_HEATING,
     STATUS_IDLE,
     STATUS_LOCKED_OUT,
+    WINDOW_OPEN_STATES,
 )
 from .models import BoilerCommand, ControlInput, ControlOutput, RoomCommand, RuntimeRoom
 
@@ -1588,7 +1667,8 @@ def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom,
     temperature = weighted_temperature(room.sources, payload.temperatures)
     usable = usable_source_count(room.sources, payload.temperatures)
     window_open = any(
-        payload.window_states.get(entity_id) == "open" for entity_id in room.window_sensors
+        payload.window_states.get(entity_id) in WINDOW_OPEN_STATES
+        for entity_id in room.window_sensors
     )
     calling = next_calling(
         runtime.calling,
@@ -2515,7 +2595,558 @@ git commit -m "release the boiler on unload"
 
 ---
 
-### Task 13: Packaging, the dashboard example and the migration runbook
+### Task 13: The simulation house
+
+**Files:**
+- Create: `custom_components/room_climate/sim.py`, `custom_components/room_climate/number.py`
+- Modify: `custom_components/room_climate/climate.py`, `switch.py`, `binary_sensor.py`, `sensor.py`,
+  `__init__.py`
+- Test: `tests/test_sim.py`
+
+**Interfaces:**
+- Consumes: `HouseConfig.simulation`, the coordinator, `SIM_MARKER`.
+- Produces: `sim_valve_entity`, `sim_source_entity`, `sim_local_temperature_entity`,
+  `sim_feed_entity`, `sim_window_entity`, `sim_offline_entity`, `sim_position_entity`,
+  `sim_heat_required_entity`, `SIM_BOILER`, `SIM_BOILER_FIRING`, `SIM_OUTDOOR`,
+  `measured_temperature(hass, room_id)`, `valve_position(hass, room_id)`, and the sim entity
+  classes.
+
+A platform module cannot add entities of another domain. Each platform therefore branches on
+`config.simulation`: `climate.py` adds the virtual valves and the virtual boiler, `number.py`
+adds the knobs, `switch.py` adds the window and offline knobs, `binary_sensor.py` adds the
+heat demand and the boiler firing signal, and `sensor.py` adds the valve position and the
+outdoor temperature. The entity classes live only in `sim.py`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_sim.py
+"""The bench: virtual valves, a virtual boiler and the knobs."""
+
+from __future__ import annotations
+
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.room_climate.const import DOMAIN
+
+
+def bench_room(**overrides: object) -> dict[str, object]:
+    room: dict[str, object] = {
+        "room_id": "front_room",
+        "name": "Front Room",
+        "valves": ["climate.sim_front_room_valve"],
+        "sources": [{"entity_id": "number.sim_front_room_room_temperature"}],
+    }
+    room.update(overrides)
+    return room
+
+
+def sim_options(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "simulation": True,
+        "boiler_entity": "climate.sim_boiler",
+        "outdoor_sources": ["number.sim_outdoor_temperature"],
+        "dry_run": False,
+        "rooms": [bench_room()],
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def setup_bench(hass: HomeAssistant, **overrides: object) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Room Climate Bench", options=sim_options(**overrides)
+    )
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+async def set_number(hass: HomeAssistant, entity_id: str, value: float) -> None:
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": entity_id, "value": value}
+    )
+    await hass.async_block_till_done()
+
+
+async def set_target(hass: HomeAssistant, entity_id: str, temperature: float) -> None:
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": entity_id, "temperature": temperature}
+    )
+    await hass.async_block_till_done()
+
+
+async def test_the_bench_creates_its_entities(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    for entity_id in (
+        "climate.sim_front_room_valve",
+        "number.sim_front_room_room_temperature",
+        "number.sim_front_room_valve_local_temperature",
+        "number.sim_front_room_valve_external_measured_room_sensor",
+        "sensor.sim_front_room_valve_position",
+        "binary_sensor.sim_front_room_heat_required",
+        "switch.sim_front_room_window",
+        "switch.sim_front_room_offline",
+        "climate.sim_boiler",
+        "binary_sensor.sim_boiler_firing",
+        "number.sim_outdoor_temperature",
+    ):
+        assert hass.states.get(entity_id) is not None, entity_id
+
+
+async def test_a_real_entity_is_rejected_in_a_simulated_entry(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Room Climate Bench",
+        options=sim_options(rooms=[bench_room(valves=["climate.trv_front_room"])]),
+    )
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+
+
+async def test_a_cold_room_fires_the_virtual_boiler(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await set_number(hass, "number.sim_front_room_room_temperature", 19.0)
+    await set_target(hass, "climate.room_climate_front_room", 21.0)
+
+    assert hass.states.get("climate.sim_boiler").attributes["temperature"] == 31.0
+    assert hass.states.get("binary_sensor.sim_boiler_firing").state == "on"
+    assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 21.0
+    assert hass.states.get("binary_sensor.sim_front_room_heat_required").state == "on"
+
+
+async def test_a_warm_room_releases_the_virtual_boiler(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await set_number(hass, "number.sim_front_room_room_temperature", 19.0)
+    await set_target(hass, "climate.room_climate_front_room", 21.0)
+    await set_number(hass, "number.sim_front_room_room_temperature", 22.0)
+
+    assert hass.states.get("climate.sim_boiler").attributes["temperature"] == 15.0
+    assert hass.states.get("binary_sensor.sim_boiler_firing").state == "off"
+
+
+async def test_the_valve_position_follows_the_gap(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await set_number(hass, "number.sim_front_room_room_temperature", 19.0)
+    await set_target(hass, "climate.sim_front_room_valve", 21.0)
+    assert float(hass.states.get("sensor.sim_front_room_valve_position").state) == 100.0
+
+    await set_number(hass, "number.sim_front_room_valve_external_measured_room_sensor", 2050)
+    assert float(hass.states.get("sensor.sim_front_room_valve_position").state) == 25.0
+
+
+async def test_the_feed_overrides_the_warm_local_sensor(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await set_number(hass, "number.sim_front_room_valve_local_temperature", 25.0)
+    await set_number(hass, "number.sim_front_room_room_temperature", 21.0)
+    await set_target(hass, "climate.sim_front_room_valve", 21.0)
+
+    assert hass.states.get("climate.sim_front_room_valve").attributes["current_temperature"] == 21.0
+    assert float(hass.states.get("sensor.sim_front_room_valve_position").state) == 0.0
+
+
+async def test_the_local_sensor_is_the_measurement_without_the_calibration(
+    hass: HomeAssistant,
+) -> None:
+    await setup_bench(
+        hass,
+        rooms=[bench_room(valve_mode="boost", calibration="none")],
+    )
+    await set_number(hass, "number.sim_front_room_valve_local_temperature", 24.0)
+    assert hass.states.get("climate.sim_front_room_valve").attributes["current_temperature"] == 24.0
+
+
+async def test_an_offline_valve_reports_unavailable(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
+    await hass.async_block_till_done()
+    assert hass.states.get("climate.sim_front_room_valve").state == "unavailable"
+
+
+async def test_an_open_window_closes_the_valve(hass: HomeAssistant) -> None:
+    await setup_bench(hass, rooms=[bench_room(window_sensors=["switch.sim_front_room_window"])])
+    await set_number(hass, "number.sim_front_room_room_temperature", 19.0)
+    await set_target(hass, "climate.room_climate_front_room", 21.0)
+    assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 21.0
+
+    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_window"})
+    await hass.async_block_till_done()
+
+    assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 5.0
+    assert hass.states.get("binary_sensor.room_climate_front_room_calling").state == "off"
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `uv run pytest tests/test_sim.py -v`
+Expected: FAIL, because `sim.py` does not exist and no sim entity is created.
+
+- [ ] **Step 3: Write the simulation house**
+
+```python
+# custom_components/room_climate/sim.py
+"""The simulation house: virtual valves, a virtual boiler, and the knobs."""
+
+from __future__ import annotations
+
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
+from homeassistant.components.climate import (
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACAction,
+    HVACMode,
+)
+from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.core import Event, HomeAssistant, callback, State
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.event import async_track_state_change_event
+
+from .const import DOMAIN, SIM_MARKER
+
+FEED_DISABLED = -8000.0
+FEED_SCALE = 100.0
+VALVE_POSITION_GAIN = 50.0
+BOILER_FIRING_THRESHOLD = 30.0
+SIM_MIN_TEMPERATURE = 5.0
+SIM_MAX_TEMPERATURE = 35.0
+
+
+def sim_valve_entity(room_id: str) -> str:
+    """Return the virtual valve of one room."""
+    return f"climate.{SIM_MARKER}{room_id}_valve"
+
+
+def sim_source_entity(room_id: str) -> str:
+    """Return the virtual room temperature of one room."""
+    return f"number.{SIM_MARKER}{room_id}_room_temperature"
+
+
+def sim_local_temperature_entity(room_id: str) -> str:
+    """Return the local sensor knob of one virtual valve."""
+    return f"number.{SIM_MARKER}{room_id}_valve_local_temperature"
+
+
+def sim_feed_entity(room_id: str) -> str:
+    """Return the feed entity of one virtual valve."""
+    return f"number.{SIM_MARKER}{room_id}_valve_external_measured_room_sensor"
+
+
+def sim_window_entity(room_id: str) -> str:
+    """Return the window knob of one room."""
+    return f"switch.{SIM_MARKER}{room_id}_window"
+
+
+def sim_offline_entity(room_id: str) -> str:
+    """Return the offline knob of one room."""
+    return f"switch.{SIM_MARKER}{room_id}_offline"
+
+
+def sim_position_entity(room_id: str) -> str:
+    """Return the position sensor of one virtual valve."""
+    return f"sensor.{SIM_MARKER}{room_id}_valve_position"
+
+
+def sim_heat_required_entity(room_id: str) -> str:
+    """Return the heat demand of one virtual valve."""
+    return f"binary_sensor.{SIM_MARKER}{room_id}_heat_required"
+
+
+SIM_BOILER = "climate.sim_boiler"
+SIM_BOILER_FIRING = "binary_sensor.sim_boiler_firing"
+SIM_OUTDOOR = "number.sim_outdoor_temperature"
+
+
+def _number(hass: HomeAssistant, entity_id: str) -> float | None:
+    state: State | None = hass.states.get(entity_id)
+    if state is None or state.state in ("unknown", "unavailable", ""):
+        return None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
+
+
+def measured_temperature(hass: HomeAssistant, room_id: str) -> float | None:
+    """Return what the virtual valve measures: the feed when set, else its local sensor."""
+    feed = _number(hass, sim_feed_entity(room_id))
+    if feed is not None and feed != FEED_DISABLED:
+        return feed / FEED_SCALE
+    return _number(hass, sim_local_temperature_entity(room_id))
+
+
+def valve_position(hass: HomeAssistant, room_id: str) -> float:
+    """Return the valve position in percent."""
+    state = hass.states.get(sim_valve_entity(room_id))
+    if state is None or state.state in ("off", "unavailable"):
+        return 0.0
+    target = state.attributes.get("temperature")
+    measured = measured_temperature(hass, room_id)
+    if target is None or measured is None:
+        return 0.0
+    return max(0.0, min(100.0, (float(target) - measured) * VALVE_POSITION_GAIN))
+
+
+def boiler_firing(hass: HomeAssistant) -> bool:
+    """Return whether the virtual boiler fires."""
+    state = hass.states.get(SIM_BOILER)
+    if state is None or state.state != "heat":
+        return False
+    target = state.attributes.get("temperature")
+    return target is not None and float(target) >= BOILER_FIRING_THRESHOLD
+
+
+def _room_offline(hass: HomeAssistant, room_id: str) -> bool:
+    state = hass.states.get(sim_offline_entity(room_id))
+    return state is not None and state.state == "on"
+
+
+class SimValveEntity(ClimateEntity):
+    """A valve that computes its position from the gap of target and measurement."""
+
+    _attr_has_entity_name = True
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
+    _attr_hvac_mode = HVACMode.HEAT
+    _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+    _attr_target_temperature_step = 0.5
+    _attr_min_temp = SIM_MIN_TEMPERATURE
+    _attr_max_temp = SIM_MAX_TEMPERATURE
+
+    def __init__(self, room_id: str) -> None:
+        self.room_id = room_id
+        self._attr_unique_id = f"{DOMAIN}_{SIM_MARKER}{room_id}_valve"
+        self._attr_name = f"Sim {room_id.replace('_', ' ')} valve"
+        self._attr_target_temperature = SIM_MIN_TEMPERATURE
+
+    @property
+    def available(self) -> bool:
+        return not _room_offline(self.hass, self.room_id)
+
+    @property
+    def current_temperature(self) -> float | None:
+        return measured_temperature(self.hass, self.room_id)
+
+    @property
+    def hvac_action(self) -> HVACAction:
+        return HVACAction.HEATING if valve_position(self.hass, self.room_id) > 0 else HVACAction.IDLE
+
+    async def async_set_temperature(self, **kwargs: object) -> None:
+        temperature = kwargs.get("temperature")
+        if isinstance(temperature, (int, float)):
+            self._attr_target_temperature = float(temperature)
+        self.async_write_ha_state()
+
+
+class SimBoilerEntity(ClimateEntity):
+    """A boiler that fires on a high target, like the Hive pair."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Sim boiler"
+    _attr_unique_id = f"{DOMAIN}_sim_boiler"
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
+    _attr_hvac_mode = HVACMode.HEAT
+    _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+    _attr_target_temperature_step = 0.5
+    _attr_min_temp = SIM_MIN_TEMPERATURE
+    _attr_max_temp = 32.0
+    _attr_target_temperature = 15.0
+
+    @property
+    def hvac_action(self) -> HVACAction:
+        return HVACAction.HEATING if boiler_firing(self.hass) else HVACAction.IDLE
+
+    async def async_set_temperature(self, **kwargs: object) -> None:
+        temperature = kwargs.get("temperature")
+        if isinstance(temperature, (int, float)):
+            self._attr_target_temperature = float(temperature)
+        mode = kwargs.get("hvac_mode")
+        if isinstance(mode, HVACMode):
+            self._attr_hvac_mode = mode
+        self.async_write_ha_state()
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        self._attr_hvac_mode = hvac_mode
+        self.async_write_ha_state()
+
+
+class SimNumberEntity(NumberEntity):
+    """A temperature knob of the bench."""
+
+    _attr_has_entity_name = True
+    _attr_mode = NumberMode.BOX
+    _attr_native_step = 0.1
+    _attr_native_min_value = SIM_MIN_TEMPERATURE
+    _attr_native_max_value = SIM_MAX_TEMPERATURE
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(
+        self, key: str, name: str, initial: float, offline_room: str | None = None
+    ) -> None:
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_name = name
+        self._attr_native_value = initial
+        self._offline_room = offline_room
+
+    @property
+    def available(self) -> bool:
+        if self._offline_room is None:
+            return True
+        return not _room_offline(self.hass, self._offline_room)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._attr_native_value = value
+        self.async_write_ha_state()
+
+
+class SimSwitchEntity(SwitchEntity):
+    """A two state knob of the bench."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, key: str, name: str, initial: bool = False) -> None:
+        self._attr_unique_id = f"{DOMAIN}_{key}"
+        self._attr_name = name
+        self._attr_is_on = initial
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        self._attr_is_on = True
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        self._attr_is_on = False
+        self.async_write_ha_state()
+
+
+class _DerivedSimEntity(Entity):
+    """An entity that recomputes when one of the entities it reads changes."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _watch: tuple[str, ...] = ()
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_track_state_change_event(self.hass, list(self._watch), self._handle_change)
+        )
+
+    @callback
+    def _handle_change(self, event: Event) -> None:
+        self.async_write_ha_state()
+
+
+class SimValvePositionSensor(_DerivedSimEntity, SensorEntity):
+    """The position of one virtual valve."""
+
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, room_id: str) -> None:
+        self.room_id = room_id
+        self._attr_unique_id = f"{DOMAIN}_{SIM_MARKER}{room_id}_valve_position"
+        self._attr_name = f"Sim {room_id.replace('_', ' ')} valve position"
+        self._watch = (
+            sim_valve_entity(room_id),
+            sim_feed_entity(room_id),
+            sim_local_temperature_entity(room_id),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return valve_position(self.hass, self.room_id)
+
+
+class SimHeatRequiredBinary(_DerivedSimEntity, BinarySensorEntity):
+    """The heat demand of one virtual valve."""
+
+    _attr_device_class = BinarySensorDeviceClass.HEAT
+
+    def __init__(self, room_id: str) -> None:
+        self.room_id = room_id
+        self._attr_unique_id = f"{DOMAIN}_{SIM_MARKER}{room_id}_heat_required"
+        self._attr_name = f"Sim {room_id.replace('_', ' ')} heat required"
+        self._watch = (sim_valve_entity(room_id), sim_position_entity(room_id))
+
+    @property
+    def is_on(self) -> bool:
+        return valve_position(self.hass, self.room_id) > 0
+
+
+class SimBoilerFiringBinary(_DerivedSimEntity, BinarySensorEntity):
+    """Whether the virtual boiler fires."""
+
+    _attr_device_class = BinarySensorDeviceClass.HEAT
+    _attr_name = "Sim boiler firing"
+    _attr_unique_id = f"{DOMAIN}_sim_boiler_firing"
+
+    def __init__(self) -> None:
+        self._watch = (SIM_BOILER,)
+
+    @property
+    def is_on(self) -> bool:
+        return boiler_firing(self.hass)
+```
+
+The platforms add the sim entities when `config.simulation` is true:
+
+```python
+# the branch every platform takes
+if config.simulation:
+    async_add_entities(SimValveEntity(room.room_id) for room in config.rooms)
+```
+`climate.py` also adds `SimBoilerEntity()`. `number.py` adds three knobs per room and the
+outdoor knob:
+
+```python
+async_add_entities(
+    [
+        SimNumberEntity(
+            f"{SIM_MARKER}{room.room_id}_room_temperature",
+            f"Sim {room.room_id.replace('_', ' ')} room temperature",
+            20.0,
+        ),
+        SimNumberEntity(
+            f"{SIM_MARKER}{room.room_id}_valve_local_temperature",
+            f"Sim {room.room_id.replace('_', ' ')} local temperature",
+            20.0,
+            offline_room=room.room_id,
+        ),
+        SimNumberEntity(
+            f"{SIM_MARKER}{room.room_id}_valve_external_measured_room_sensor",
+            f"Sim {room.room_id.replace('_', ' ')} external sensor",
+            FEED_DISABLED,
+            offline_room=room.room_id,
+        ),
+    ]
+    for room in config.rooms
+)
+```
+plus `SimSwitchEntity(f"{SIM_MARKER}{room.room_id}_window", ...)` and `..._offline` in
+`switch.py`, `SimBoilerFiringBinary()` in `binary_sensor.py`, and the position sensors in
+`sensor.py`. `number.py` is a new platform, so `PLATFORMS` gains `Platform.NUMBER`.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `uv run pytest tests/test_sim.py -v`
+Expected: PASS, ten tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate/sim.py custom_components/room_climate/number.py \
+  custom_components/room_climate/climate.py custom_components/room_climate/switch.py \
+  custom_components/room_climate/binary_sensor.py custom_components/room_climate/sensor.py \
+  custom_components/room_climate/__init__.py tests/test_sim.py
+git commit -m "add the simulation house"
+```
+
+---
+
+### Task 14: Packaging, the bench dashboard and the migration runbook
 
 **Files:**
 - Modify: `README.md`, `hacs.json`
@@ -2545,29 +3176,41 @@ Expected: FAIL with `KeyError: 'name'`, because `hacs.json` has no `name` field 
 5. Write `scripts/probe_live.py`. It reads the token from `~/.hermes/ha_token`, prints the
    room climate entities with their attributes, the boiler state, the status sensor, and the
    current value of every feed entity.
+6. Write `dashboard/room-climate-bench.yaml` with the knobs of the bench, the virtual boiler,
+   the virtual valves and their positions.
 
-- [ ] **Step 3: Run the live regression**
+- [ ] **Step 3: Run the live regression, bench first**
 
-1. Push the repository. Tag `v0.1.0` and push the tag.
-2. Add the repository to HACS as a custom repository of category Integration, then download
-   it. Restart Home Assistant.
-3. Add the integration, and configure each room with the table of the spec's section 3.3.
-4. Confirm the feed scale on one valve: write 2150 into its feed entity, read the value back,
-   and watch the valve demand for one hour.
-5. Keep `dry_run` on for one day. Watch the log and `sensor.room_climate_status`.
-6. Turn `dry_run` off.
-7. Disable `automation.heat_on_demand`.
-8. Set one room target above its temperature. Confirm that the boiler reaches 31 °C, that the
-   valve of the room reaches its target, and that `sensor.room_climate_<room>_temperature_ema`
-   moves.
-9. Lower the lockout threshold below the outdoor temperature. Confirm that the boiler returns
-   to 15 °C with mode `off` within one cycle, and that the valves return to 5 °C.
-10. Restore the lockout threshold to 18 °C.
-11. Repoint the eight dashboard cards to `climate.room_climate_*`.
-12. Remove the eight Better Thermostat entries.
-13. Remove Better Thermostat from HACS.
-14. Record every measurement in `docs/plans/2026-10-19-room-heating.evidence.md`, including
-    the feed scale, the valve targets, the boiler transitions and the cycle timings.
+Bench, which is phase A of the spec's section 8.1:
+
+1. Push the repository to `main`, then tag `v0.1.0` and push the tag.
+2. Add `octo47/ha-automation` to HACS as a custom repository of category Integration, then
+   download it. Restart Home Assistant.
+3. Add the integration with `simulation` on and `dry_run` on. Add each room of the spec's
+   section 3.3 by name.
+4. Run `uv run python scripts/probe_live.py`, and read the computed commands in the log.
+5. Turn `dry_run` off.
+6. Walk the knob table of the spec's section 8.1 step 8. Confirm every row.
+7. Tune the weights, the hysteresis, `open_offset`, `min_on_seconds` and
+   `lockout_hysteresis` until every row behaves as its right column states.
+
+Real house, which is phase B of the spec's section 8.2:
+
+8. Add a second integration entry with `simulation` off. Configure each room with the real
+   valve and sensor ids of the spec's section 3.3.
+9. Confirm the feed scale on one valve. Write 2150 into its feed entity, read the value back,
+   and watch `sensor.<trv>_pi_heating_demand` for one hour. This is the one live write to a
+   real valve, and the operator performs it.
+10. Keep `dry_run` on for one day. Watch the log and `sensor.room_climate_status`.
+11. Turn `dry_run` off, then disable `automation.heat_on_demand`.
+12. Watch one full heating cycle per room. Confirm that the boiler reaches 31 °C when a room
+    calls, and 15 °C when no room calls.
+13. Lower the lockout threshold below the outdoor temperature. Confirm that the boiler returns
+    to 15 °C and the valves to 5 °C within one cycle. Restore the threshold to 18 °C.
+14. Repoint the eight dashboard cards to `climate.room_climate_*`.
+15. Remove the eight Better Thermostat entries, then remove Better Thermostat from HACS.
+16. Record every measurement in `docs/plans/2026-10-19-room-heating.evidence.md`: the feed
+    scale, the valve targets, the boiler transitions, the cycle timings and the bench rows.
 
 - [ ] **Step 4: Run the checks to verify they pass**
 
@@ -2587,11 +3230,12 @@ git commit -m "package room climate for HACS and record the migration"
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
 tasks 2, 11. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
-task 7. Section 6.5 → task 8. Section 6.6 → task 4. Section 6.7 → tasks 9, 12. Section 7 →
-tasks 8, 10. Section 8 → task 13. Section 9 → every task.
+task 7. Section 6.5 → task 8. Section 6.6 → task 4. Section 6.7 → tasks 9, 12. Section 7.1 to
+7.3 → tasks 8, 10. Section 7.4 → task 13. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
+Section 9 → every task.
 
 **Review focus coverage:** item 1 → task 4. Item 2 → tasks 5, 8. Item 3 → task 9. Item 4 →
-tasks 6, 8. Item 5 → tasks 8, 12. Item 6 → tasks 7, 9.
+tasks 6, 8. Item 5 → tasks 8, 12. Item 6 → tasks 7, 9. Item 7 → tasks 2, 13.
 
 **Type consistency:** `RuntimeRoom` is the name in `models.py`, the coordinator and the
 climate entity. `valve_targets` returns `Mapping[str, float]` in the model and in the

@@ -33,6 +33,8 @@ other custom integration, or on any HACS repository.
 | Lockout | Heating is blocked because the outdoor temperature is high. |
 | Cycle | One evaluation of every room and of the boiler. |
 | Dry run | The component computes commands and logs them, and sends no service call. |
+| Simulation house | The virtual valves, the virtual boiler and the knobs of section 7.4. |
+| Knob | A `number` entity or a `switch` entity that the operator sets by hand. |
 
 Boiler ON and Boiler OFF are the only two boiler commands in this document. The Hive
 thermostat has no separate call-for-heat input.
@@ -171,6 +173,8 @@ graph sensor per room, and section 7.3 states it.
 12. Provide a dry-run mode, a master enable switch and a lockout override switch.
 13. Provide diagnostic entities for the dashboard, including one graph temperature per
     room and one for the house.
+14. Provide a simulation house, so the operator sets every input by hand and watches the
+    control loop before a real valve moves.
 
 ### 4.2 Out of scope
 
@@ -183,6 +187,7 @@ graph sensor per room, and section 7.3 states it.
    setpoints.
 7. The presets Activity, Away, Boost, Comfort, Eco, Home and Sleep of Better Thermostat.
    The component has one setpoint per room.
+8. A thermal model of the room. The simulated room temperature of section 7.4 is a knob.
 
 ## 5. Architecture
 
@@ -197,6 +202,8 @@ graph sensor per room, and section 7.3 states it.
    sensor.py        room temperature, room EMA, outdoor temperature, house status
    config_flow.py   house entry, room add, room edit, room remove
    __init__.py      setup, unload, boiler release
+   number.py        the temperature knobs of the simulation house
+   sim.py           the simulation house: virtual valves, a virtual boiler, knobs
 ```
 
 The decision logic has one home: `control.py`. The coordinator imports it and the tests
@@ -240,6 +247,7 @@ one source that two rooms claim. That check needs every room at once.
 | `dry_run` | bool | `true` | Safety default. |
 | `master_enabled` | bool | `true` | Starting state of the master switch. |
 | `ema_seconds` | int | `1800` | 60 to 10800. The time constant of the graph temperatures. |
+| `simulation` | bool | `false` | The entry drives the simulation house of section 7.4. |
 | `rooms` | list of `RoomConfig` | `[]` | See the next table. |
 
 | Room field | Type | Default | Rule |
@@ -291,7 +299,8 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
 4. The room starts to call when `room_temperature < setpoint − hysteresis`.
 5. The room stops calling when `room_temperature > setpoint + hysteresis`.
 6. Between those two values the room keeps its previous state.
-7. A window sensor of the room in the state `open` suspends the demand at once.
+7. A window sensor of the room in the state `open` or `on` suspends the demand at once.
+   The valve of a Hive TRV reports `open`, and a switch reports `on`.
 8. When the room temperature is `None`, the room calls when at least one
    `demand_fallback_sensors` entity is in the state `on`. This rule keeps a room warm
    after a source fails. Rule 8 is the only case that calls without a temperature. The
@@ -305,8 +314,8 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
    `off_setpoint` while the room does not call. The value is clamped and rounded as in
    rule 1.
 3. A valve of a room with the mode `off` receives `off_setpoint`.
-4. The lockout, the master switch off, and a window sensor in the state `open` put the
-   valves of the room at `off_setpoint`.
+4. The lockout, the master switch off, and an open window sensor put the valves of the
+   room at `off_setpoint`.
 5. The component sends a command only when the wanted target differs from the last sent
    target by 0.25 °C or more.
 6. The component defers a due command while
@@ -431,29 +440,117 @@ history of the old sensors does not transfer.
 The Scheduler integration sets the setpoint of a virtual thermostat through
 `climate.set_temperature`. No separate bridge entity is necessary.
 
+### 7.4 The simulation house
+
+The bench lets the operator set every input by hand. It runs the same coordinator, the same
+rules of section 6, and the same service calls as a real house. It touches no real valve, and
+it cannot start the boiler.
+
+Rules:
+
+1. The house field `simulation` turns the bench on for one config entry.
+2. In a simulated entry the component derives the valve and the source of each room from the
+   room id. The room form asks for the name only.
+3. A simulated entry must not name an entity outside the `sim_` prefix. The component
+   rejects such an entity at setup.
+4. A simulated entry can run with `dry_run` off. It sends its commands to the virtual valves
+   and the virtual boiler.
+5. The component creates no simulation entity for an entry with `simulation` off.
+6. A change of a knob takes effect in the next cycle. The component runs no thermal model,
+   so the operator moves the room temperature by hand.
+
+Per room:
+
+| Entity | Kind | Purpose |
+| --- | --- | --- |
+| `climate.sim_<room>_valve` | climate | The virtual valve. Its target is the valve command. |
+| `number.sim_<room>_room_temperature` | number, temperature | The room temperature. The operator sets it, and it is the source of the room. |
+| `number.sim_<room>_valve_local_temperature` | number, temperature | The sensor of the valve itself, with its warm bias. |
+| `number.sim_<room>_valve_external_measured_room_sensor` | number | The feed entity. The component writes it when the calibration is on. |
+| `sensor.sim_<room>_valve_position` | sensor, % | The position the virtual valve computes. |
+| `binary_sensor.sim_<room>_heat_required` | binary sensor | `on` when the position is above 0. |
+| `switch.sim_<room>_window` | switch | The window knob. |
+| `switch.sim_<room>_offline` | switch | Makes the valve, its knobs and its sensors `unavailable`. |
+
+The house:
+
+| Entity | Kind | Purpose |
+| --- | --- | --- |
+| `climate.sim_boiler` | climate | The virtual boiler. Target 31 with mode `heat` means firing. |
+| `binary_sensor.sim_boiler_firing` | binary sensor | `on` when the target is at or above 30 and the mode is `heat`. |
+| `number.sim_outdoor_temperature` | number, temperature | The outdoor temperature knob. |
+
+The virtual valve:
+
+1. The measured temperature is the value of the feed entity, when the feed entity holds a
+   value.
+2. The measured temperature is the value of the local temperature knob, when the feed entity
+   holds no value.
+3. The position is `clamp((target − measured) × 50, 0, 100)`.
+4. The heat demand is `position > 0`.
+5. The feed entity holds no value while it reads −8000.
+6. The virtual valve reads the feed at the scale 100.
+
+Switch-over:
+
+1. A simulated entry and a real entry can run at the same time, because a simulated entry
+   names only `sim_` entities.
+2. The real entry takes the duty when the operator turns its `dry_run` off.
+3. Disable the simulated entry when the bench is no longer useful. Its entities go away.
+4. A second entry adds the suffix `_2` to the house entity ids, for example
+   `switch.room_climate_boiler_automation_2`.
+
 ## 8. Install, migrate and roll back
 
-Procedure:
+Two phases. Phase A runs on the bench and touches no hardware. Phase B moves to the real
+valves.
+
+### 8.1 Phase A: the bench
 
 1. Open HACS, then Integrations.
 2. Add `octo47/ha-automation` as a custom repository of category Integration.
 3. Download Room Climate, then restart Home Assistant.
-4. Add the integration from Settings, then Devices and Services.
-5. Fill the house form. Add one room per radiator group, with the table of section 3.3.
-6. Confirm the scale of the feed entity on one valve. Write the value 2150 into
+4. Add the integration. Turn `simulation` on. Keep `dry_run` on.
+5. Add one room per row of section 3.3. Give the room its name only, because the component
+   derives the virtual valve and the virtual source.
+6. Read the computed commands in the log for one cycle.
+7. Turn `dry_run` off.
+8. Drive the bench with this table. Read the state after each row.
+
+| Knob | Value | Expected |
+| --- | --- | --- |
+| `number.sim_front_room_room_temperature` | 19.0 | The room calls. The valve reaches the setpoint. The boiler reaches 31 with `hvac_action` heating. |
+| the same | 21.5 | The room stops. The boiler reaches 15 with mode `off`. |
+| `number.sim_outdoor_temperature` | 19.0 | Status `locked_out`. The boiler at 15. The valves at `off_setpoint`. |
+| `switch.room_climate_lockout_override` | on | The lockout stops, and the room calls again. |
+| `switch.sim_front_room_window` | on | The demand stops, and the valve closes in the same cycle. |
+| `switch.sim_front_room_offline` | on | The room reports degraded, and the cycle continues. |
+| `number.sim_front_room_valve_external_measured_room_sensor` | 2150 | The virtual valve measures 21.5, and the feed removes the bias of the local sensor. |
+
+9. Correct the weights, the hysteresis, `open_offset`, `min_on_seconds` and
+   `lockout_hysteresis` until each row behaves as the right column states.
+10. Record the result in `docs/plans/2026-10-19-room-heating.evidence.md`.
+
+Step 9 is the purpose of the bench. A parameter changes here, and no real valve moves.
+
+### 8.2 Phase B: the real house
+
+1. Add a second entry, with `simulation` off. Fill the house form.
+2. Add one room per radiator group, with the table of section 3.3.
+3. Confirm the scale of the feed entity on one valve. Write the value 2150 into
    `number.<trv>_external_measured_room_sensor`. Read the value back. Watch
    `sensor.<trv>_pi_heating_demand` and the room temperature for one hour.
-7. If the valve regulates on the value, keep the `calibration` of `external_sensor` and
-   the `calibration_scale` of 100. If not, set the `calibration` to `none` and the
-   `valve_mode` to `boost`.
-8. Keep `dry_run` on. Watch the log and `sensor.room_climate_status` for one day.
-9. Turn `dry_run` off.
-10. Disable `automation.heat_on_demand`. Two controllers must not command
-    `climate.heating_heat`.
-11. Watch one full heating cycle per room.
-12. Repoint the eight dashboard cards to the new climate entities.
-13. Remove the eight Better Thermostat entries from Settings, then Devices and Services.
-14. Remove Better Thermostat from HACS.
+4. If the valve regulates on the value, keep the `calibration` of `external_sensor` and the
+   `calibration_scale` of 100. If not, set the `calibration` to `none` and the `valve_mode`
+   to `boost`.
+5. Keep `dry_run` on. Watch the log and `sensor.room_climate_status` for one day.
+6. Turn `dry_run` off.
+7. Disable `automation.heat_on_demand`. Two controllers must not command
+   `climate.heating_heat`.
+8. Watch one full heating cycle per room.
+9. Repoint the eight dashboard cards to the new climate entities.
+10. Remove the eight Better Thermostat entries from Settings, then Devices and Services.
+11. Remove Better Thermostat from HACS.
 
 Roll back:
 
@@ -462,8 +559,8 @@ Roll back:
 2. Add the Better Thermostat entries again.
 3. Enable `automation.heat_on_demand`.
 
-Step 12 must happen before step 13. The dashboard and the removed entities share no
-history, so a card points at a missing entity between the two steps.
+Step 9 must happen before step 10. The dashboard and the removed entities share no history,
+so a card points at a missing entity between the two steps.
 
 ## 9. Requirements of the development process
 
@@ -490,6 +587,7 @@ history, so a card points at a missing entity between the two steps.
 | Runtime dependency | Keep `pydantic`, declared in the manifest. The repository rule requires a typed model at every boundary. | Replace the models with frozen dataclasses, and keep the integration free of third-party requirements. |
 | Code from Better Thermostat | Reimplement the logic, and keep this repository outside AGPL-3.0. | Copy the calibration logic, and license this repository AGPL-3.0. |
 | Repository licence | MIT. The component copies no AGPL-3.0 code, so the licence is free. | Another licence of the operator's choice. |
+| The simulation house | Inside the integration, behind `simulation`. One code path, and one install. | A separate test package, or a set of Home Assistant helpers outside the component. |
 
 ## 11. Acceptance criteria
 
@@ -508,11 +606,16 @@ history, so a card points at a missing entity between the two steps.
    rooms.
 8. An unavailable source is ignored. An unavailable valve is skipped, and the room reports
    degraded.
-9. A window sensor in the state `open` suspends the demand, and the valve of the room
-   moves to `off_setpoint`.
+9. A window sensor in the state `open` or `on` suspends the demand, and the valve of the
+   room moves to `off_setpoint`.
 10. `dry_run` sends no service call. The log shows the command that the component would
     send.
 11. Removing the entry sets the boiler to the OFF values.
 12. The virtual thermostat appears as a device in the area of its room, and a thermostat
     card renders it.
 13. `make test`, `make lint` and `make typecheck` pass from a clean checkout.
+14. A simulated entry creates the entities of section 7.4, and it commands no real valve
+    and no real boiler.
+15. On the bench, a room that calls sets its virtual valve and the virtual boiler. A room
+    that stops releases both.
+16. A simulated entry rejects a room entity without the `sim_` prefix.
