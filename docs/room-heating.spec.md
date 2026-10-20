@@ -304,7 +304,8 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
 7. A window sensor of the room in the state `open` or `on` suspends the demand at once.
    The valve of a Hive TRV reports `open`, and a switch reports `on`.
 9. The room cannot call for heat when every valve of the room is `unavailable`. A room
-   with no working valve cannot deliver heat, so the boiler must not run for it.
+   with no working valve cannot deliver heat, so the boiler must not run for it. A valve
+   with no state at all counts as unavailable.
 8. When the room temperature is `None`, the room calls when at least one
    `demand_fallback_sensors` entity is in the state `on`. This rule keeps a room warm
    after a source fails. Rule 8 is the only case that calls without a temperature. The
@@ -322,7 +323,8 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
    room at `off_setpoint`.
 5. The component sends a command only when the wanted target differs from the last sent
    target by 0.25 °C or more.
-6. The component defers a due command while
+6. The component records the time of a modulating command only, so a close never delays the
+   next opening. The component defers a due command while
    `now − last_command_at < valve_command_interval_seconds`. A command to `off_setpoint`
    is never deferred. The valve motor and the Zigbee network both need the limit.
 7. A valve in the state `unavailable` does not stop the cycle. The component skips it,

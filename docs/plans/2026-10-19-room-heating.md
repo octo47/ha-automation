@@ -1893,6 +1893,20 @@ The coordinator's tests drive a cycle through the coordinator itself: the virtua
 arrives in Task 10, and the `room_climate.recompute` service arrives in Task 12. The service-based
 test of the service lives in Task 12.
 
+Facts of Home Assistant 2026.10.1 that shape this task, measured while it was built:
+
+1. `config_flow.py` must import for an entry to set up, so Task 9 ships a config flow with no
+   steps. Task 11 fills the flows in.
+2. `ConfigEntry` has no `async_add_listener` and no `async_update_listeners` in this version,
+   so the coordinator carries its own listener registry.
+3. `hass.services.async_calls()` does not exist. The tests record service calls from the
+   `EVENT_CALL_SERVICE` bus event, through `calls()` and `calls_for()`.
+4. A test that lets the coordinator command a service must load the service domain first, or
+   `async_call` raises `ServiceNotFound`.
+5. The platform forward joins in Task 10, because the platform modules do not exist in Task 9.
+6. The interval records a modulating command only, so the close of the first cycle does not
+   delay the opening command of the next one.
+
 **Interfaces:**
 - Consumes: `decide`, `HouseConfig.from_options`, `ControlOutput`.
 - Produces: `RoomClimateCoordinator(hass, entry, config)`, stored on `entry.runtime_data`, with the attributes `config`,
@@ -1904,16 +1918,65 @@ test of the service lives in Task 12.
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_coordinator.py
 """The coordinator reads states, decides, and applies the commands."""
 
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant
+from collections.abc import Callable
+from typing import Any
+
+from homeassistant.const import (
+    ATTR_DOMAIN,
+    ATTR_SERVICE,
+    ATTR_SERVICE_DATA,
+    EVENT_CALL_SERVICE,
+)
+from homeassistant.core import Event, HomeAssistant
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
 from custom_components.room_climate.models import RuntimeRoom
+
+SERVICE_DOMAINS = ("climate", "number", "switch")
+
+RECORDED: dict[HomeAssistant, list[dict[str, Any]]] = {}
+
+
+async def enable_services(hass: HomeAssistant) -> None:
+    """Load the service domains the coordinator commands, and record every call."""
+    for domain in SERVICE_DOMAINS:
+        await async_setup_component(hass, domain, {})
+    RECORDED[hass] = []
+    hass.bus.async_listen(EVENT_CALL_SERVICE, _recorder(hass))
+
+
+def _recorder(hass: HomeAssistant) -> Callable[[Event[Any]], None]:
+    """Return a listener that appends every service call of one instance."""
+    calls = RECORDED[hass]
+
+    def record(event: Event[Any]) -> None:
+        calls.append(dict(event.data))
+
+    return record
+
+
+def calls(hass: HomeAssistant, domain: str, service: str) -> list[dict[str, Any]]:
+    """Return the service data of every recorded call of one service."""
+    return [
+        dict(record[ATTR_SERVICE_DATA])
+        for record in RECORDED.get(hass, [])
+        if record.get(ATTR_DOMAIN) == domain and record.get(ATTR_SERVICE) == service
+    ]
+
+
+def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict[str, Any]]:
+    """Return the recorded climate service calls that name one entity."""
+    return [
+        service_data
+        for service_data in calls(hass, "climate", service)
+        if service_data.get("entity_id") == entity_id
+    ]
 
 
 def options(**overrides: object) -> dict[str, object]:
@@ -1934,6 +1997,7 @@ def options(**overrides: object) -> dict[str, object]:
 
 
 async def setup_entry(hass: HomeAssistant, **overrides: object) -> MockConfigEntry:
+    await enable_services(hass)
     entry = MockConfigEntry(domain=DOMAIN, title="Room Climate", options=options(**overrides))
     entry.add_to_hass(hass)
     hass.states.async_set("sensor.front_room_temperature", "20.0")
@@ -1944,14 +2008,6 @@ async def setup_entry(hass: HomeAssistant, **overrides: object) -> MockConfigEnt
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
-
-
-def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict]:
-    return [
-        dict(call.data)
-        for call in hass.services.async_calls("climate", service)
-        if call.data.get("entity_id") == entity_id
-    ]
 
 
 async def set_room_target(entry: MockConfigEntry, room_id: str, temperature: float) -> None:
@@ -1979,8 +2035,8 @@ async def test_a_call_for_heat_commands_the_valve_and_the_boiler(hass: HomeAssis
 
 async def test_the_calibration_feed_is_written(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=False)
-    writes = hass.services.async_calls("number", "set_value")
-    assert any(call.data.get("value") == 2000 for call in writes)
+    writes = calls(hass, "number", "set_value")
+    assert any(call.get("value") == 2000 for call in writes)
 
 
 async def test_dry_run_sends_no_command(hass: HomeAssistant) -> None:
@@ -1989,11 +2045,12 @@ async def test_dry_run_sends_no_command(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
     assert calls_for(hass, "set_temperature", "climate.trv_front_room") == []
     assert calls_for(hass, "set_temperature", "climate.heating_heat") == []
-    assert hass.services.async_calls("number", "set_value") == []
+    assert calls(hass, "number", "set_value") == []
     assert entry.runtime_data.output is not None
 
 
 async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssistant) -> None:
+    await enable_services(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Room Climate",
@@ -2297,17 +2354,18 @@ git commit -m "add the room climate coordinator"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_platforms.py
 """The entities the operator sees and the Scheduler commands."""
 
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 
-from .test_coordinator import setup_entry
+from .test_coordinator import calls, setup_entry
 
 
-async def test_the_virtual_thermostat_reports_the_weighted_temperature(hass: HomeAssistant) -> None:
+async def test_the_virtual_thermostat_reports_the_weighted_temperature(
+    hass: HomeAssistant,
+) -> None:
     await setup_entry(hass, dry_run=True)
     state = hass.states.get("climate.room_climate_front_room")
     assert state is not None
@@ -2320,7 +2378,9 @@ async def test_the_virtual_thermostat_reports_the_weighted_temperature(hass: Hom
 async def test_the_scheduler_sets_the_setpoint_and_the_room_calls(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=True)
     await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_front_room", "temperature": 21.0},
     )
     await hass.async_block_till_done()
     state = hass.states.get("climate.room_climate_front_room")
@@ -2348,7 +2408,9 @@ async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
 async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=False)
     await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_front_room", "temperature": 21.0},
     )
     await hass.async_block_till_done()
     await hass.services.async_call(
@@ -2356,9 +2418,9 @@ async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> Non
     )
     await hass.async_block_till_done()
     boiler = [
-        dict(call.data)
-        for call in hass.services.async_calls("climate", "set_temperature")
-        if call.data.get("entity_id") == "climate.heating_heat"
+        call
+        for call in calls(hass, "climate", "set_temperature")
+        if call.get("entity_id") == "climate.heating_heat"
     ]
     assert boiler[-1]["temperature"] == 15.0
     assert boiler[-1]["hvac_mode"] == "off"
@@ -2519,6 +2581,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
@@ -2554,6 +2617,36 @@ async def test_a_room_needs_a_valve_and_a_source(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"]
+
+
+async def test_a_room_device_lands_in_its_area(hass: HomeAssistant) -> None:
+    hass.states.async_set("sensor.front_room", "20.0")
+    area = hass.areas.async_get_or_create("front_room_area", "Front Room")
+    entry = MockConfigEntry(domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]})
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "add_room"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "room_id": "front_room",
+            "name": "Front Room",
+            "area_id": area.id,
+            "valves": ["climate.trv_front_room"],
+            "sources": [{"entity_id": "sensor.front_room"}],
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    devices = device_registry.async_get(hass).devices
+    front_room = [device for device in devices.values() if "front_room" in (device.name or "").lower()]
+    assert front_room and front_room[0].area_id == area.id
 
 
 async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
@@ -2606,10 +2699,16 @@ form collects `valves` and `sources` with `EntitySelector(multiple=True)`, `cali
 room list plus the new room, and it maps `ValidationError` to the errors `shared_entity` and
 `invalid_room`.
 
+The flow also assigns the device of a room to the area of the room. It reads the device
+registry, finds the device whose identifier is the room, and calls
+`async_update_device(device_id, area_id=room.area_id)`. The area dashboard and the room cards
+depend on it. `DeviceInfo.suggested_area` cannot do the job: this Home Assistant version treats
+it as a runtime-only attribute, and it takes an area name rather than an id.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_config_flow.py -v`
-Expected: PASS, three tests.
+Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2643,7 +2742,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 
-from .test_coordinator import setup_entry
+from .test_coordinator import calls, calls_for, setup_entry
 
 
 async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
@@ -2656,11 +2755,7 @@ async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
-    boiler = [
-        dict(call.data)
-        for call in hass.services.async_calls("climate", "set_temperature")
-        if call.data.get("entity_id") == "climate.heating_heat"
-    ]
+    boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
     assert boiler[-1]["temperature"] == 15.0
     assert boiler[-1]["hvac_mode"] == "off"
 
