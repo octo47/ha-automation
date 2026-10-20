@@ -44,6 +44,10 @@ Copy these rules into every task brief. They come from the spec and from the rep
   `min_on_seconds` 300, `min_off_seconds` 300, `update_interval_seconds` 30, `hysteresis` 0.2,
   `off_setpoint` 5.0, `valve_command_interval_seconds` 300, `calibration_scale` 100,
   `open_offset` 2.0, `ema_seconds` 1800, `dry_run` true.
+- Markdown that carries Python code blocks is excluded from the formatter through
+  `extend-exclude = ["*.md"]`. Ruff parses those blocks, and its rewrite can be invalid Python
+  (measured: it turned `except (TypeError, ValueError):` into `except TypeError, ValueError:`).
+  Never remove that exclusion to make `make lint` pass.
 - The domain is `room_climate`. The manifest requires `"version"`, because HACS updates a
   custom integration by the version.
 - The manifest declares `requirements: ["pydantic>=2.11,<3"]` and no custom integration.
@@ -255,23 +259,32 @@ SERVICE_RECOMPUTE = "recompute"
 ```
 
 ```toml
-# pyproject.toml (excerpt)
+# pyproject.toml
 [project]
 name = "ha-room-climate"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14.2"
 
 [dependency-groups]
 dev = [
   "pytest",
   "pytest-asyncio",
-  "pytest-homeassistant-custom-component",
+  "pytest-homeassistant-custom-component==0.13.372",
   "ruff",
   "pyright",
 ]
 
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.ruff]
 line-length = 100
+extend-exclude = ["*.md"]
 
 [tool.pyright]
 include = ["custom_components/room_climate"]
@@ -362,6 +375,18 @@ def test_a_room_keeps_its_valves_and_weights() -> None:
 def test_weight_must_be_positive(weight: float) -> None:
     with pytest.raises(ValidationError):
         TemperatureSource(entity_id="sensor.a", weight=weight)
+
+
+def test_a_room_id_is_a_slug() -> None:
+    with pytest.raises(ValidationError):
+        room("Front Room Room")
+
+
+def test_house_rejects_two_rooms_with_one_room_id() -> None:
+    other = room("front_room", name="Front Room Two", valves=("climate.trv_other",))
+    with pytest.raises(ValidationError) as error:
+        house(rooms=(room(), other))
+    assert "room_id front_room" in str(error.value)
 
 
 def test_a_room_needs_one_valve_and_one_source() -> None:
@@ -524,7 +549,7 @@ class RoomConfig(BaseModel):
 
     model_config = FROZEN
 
-    room_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
     name: str = Field(min_length=1)
     valves: tuple[str, ...] = Field(min_length=1)
     sources: tuple[TemperatureSource, ...] = Field(min_length=1)
@@ -593,14 +618,16 @@ class HouseConfig(BaseModel):
             ):
                 if SIM_MARKER not in entity_id:
                     raise ValueError(f"a simulated house cannot name {entity_id}")
+        room_ids: dict[str, str] = {}
+        for room in self.rooms:
+            owner = room_ids.get(room.room_id)
+            if owner is not None:
+                raise ValueError(f"room_id {room.room_id} is used by {owner} and {room.name}")
+            room_ids[room.room_id] = room.name
         seen: dict[str, str] = {}
         for room in self.rooms:
-            for entity_id in (room.room_id, *room.valves):
+            for entity_id in (*room.valves, *(source.entity_id for source in room.sources)):
                 self._claim(seen, entity_id, room.name)
-        seen = {}
-        for room in self.rooms:
-            for source in room.sources:
-                self._claim(seen, source.entity_id, room.name)
         return self
 
     @staticmethod
@@ -2486,6 +2513,9 @@ Run: `uv run pytest tests/test_config_flow.py -v`
 Expected: FAIL, because the domain has no flow handler.
 
 - [ ] **Step 3: Write the flows**
+
+The room form derives `room_id` from the name with `slugify` and never asks for it, because a
+room id must be a slug for the simulation entity ids to be valid.
 
 The user step collects the house fields with `vol.Schema` selectors: `EntitySelector` with
 `domain="climate"` for the boiler, `EntitySelector` with `device_class="temperature"` for the

@@ -47,7 +47,7 @@ class RoomConfig(BaseModel):
 
     model_config = FROZEN
 
-    room_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
     name: str = Field(min_length=1)
     valves: tuple[str, ...] = Field(min_length=1)
     sources: tuple[TemperatureSource, ...] = Field(min_length=1)
@@ -116,14 +116,16 @@ class HouseConfig(BaseModel):
             ):
                 if SIM_MARKER not in entity_id:
                     raise ValueError(f"a simulated house cannot name {entity_id}")
+        room_ids: dict[str, str] = {}
+        for room in self.rooms:
+            owner = room_ids.get(room.room_id)
+            if owner is not None:
+                raise ValueError(f"room_id {room.room_id} is used by {owner} and {room.name}")
+            room_ids[room.room_id] = room.name
         seen: dict[str, str] = {}
         for room in self.rooms:
-            for entity_id in (room.room_id, *room.valves):
+            for entity_id in (*room.valves, *(source.entity_id for source in room.sources)):
                 self._claim(seen, entity_id, room.name)
-        seen = {}
-        for room in self.rooms:
-            for source in room.sources:
-                self._claim(seen, source.entity_id, room.name)
         return self
 
     @staticmethod

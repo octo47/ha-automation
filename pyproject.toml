@@ -22,6 +22,7 @@ pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
+# Docs carry Python code blocks, and the formatter rewrites them into invalid Python.
 extend-exclude = ["*.md"]
 
 [tool.pyright]

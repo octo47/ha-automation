@@ -41,6 +41,20 @@ def test_weight_must_be_positive(weight: float) -> None:
         TemperatureSource(entity_id="sensor.a", weight=weight)
 
 
+def test_a_room_id_is_a_slug() -> None:
+    with pytest.raises(ValidationError):
+        room("Front Room Room")
+    with pytest.raises(ValidationError):
+        room("front_room-room")
+
+
+def test_house_rejects_two_rooms_with_one_room_id() -> None:
+    other = room("front_room", name="Front Room Two", valves=("climate.trv_other",))
+    with pytest.raises(ValidationError) as error:
+        house(rooms=(room(), other))
+    assert "room_id front_room" in str(error.value)
+
+
 def test_a_room_needs_one_valve_and_one_source() -> None:
     with pytest.raises(ValidationError):
         room(valves=())

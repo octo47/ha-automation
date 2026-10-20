@@ -252,7 +252,7 @@ one source that two rooms claim. That check needs every room at once.
 
 | Room field | Type | Default | Rule |
 | --- | --- | --- | --- |
-| `room_id` | slug | from the name | Unique in the entry. |
+| `room_id` | slug | from the name | Matches `^[a-z0-9_]+$`. Unique in the entry. |
 | `name` | string | — | Required. |
 | `area_id` | area id | none | Optional. The component assigns the device to this area. |
 | `valves` | list of entity ids, climate domain | — | One or more. |
@@ -277,6 +277,8 @@ Rules:
    Reason: the valve and the component must agree on the room temperature.
 3. A room with an empty `valves` list is invalid.
 4. The options flow rejects a broken rule and names the two rooms.
+5. `room_id` is a slug, because the simulation house of section 7.4 builds entity ids from
+   it. The room form derives the slug from the room name.
 
 ## 6. Control rules
 
