@@ -3,15 +3,121 @@
     "step": {
       "user": {
         "title": "Room Climate",
-        "description": "Add the house that Room Climate controls."
+        "description": "Add the house that Room Climate controls.",
+        "data": {
+          "name": "Name",
+          "boiler_entity": "Boiler",
+          "boiler_on_temperature": "Boiler on temperature",
+          "boiler_off_temperature": "Boiler off temperature",
+          "outdoor_sources": "Outdoor temperature sources",
+          "lockout_temperature": "Lockout temperature",
+          "lockout_hysteresis": "Lockout hysteresis",
+          "min_on_seconds": "Minimum on time",
+          "min_off_seconds": "Minimum off time",
+          "update_interval_seconds": "Update interval",
+          "dry_run": "Dry run",
+          "master_enabled": "Master enable",
+          "simulation": "Simulation house"
+        }
       }
+    },
+    "error": {
+      "invalid_room": "A room needs at least one valve and at least one source.",
+      "shared_entity": "Two rooms claim one valve or one source."
+    },
+    "abort": {
+      "already_configured": "The house is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Room Climate options"
+        "title": "Room Climate options",
+        "menu_options": {
+          "add_room": "Add a room",
+          "edit_room": "Edit a room",
+          "remove_room": "Remove a room",
+          "house_settings": "House settings"
+        }
+      },
+      "add_room": {
+        "title": "Add a room",
+        "description": "The room id is derived from the room name.",
+        "data": {
+          "name": "Name",
+          "area_id": "Area",
+          "valves": "Valves",
+          "sources": "Temperature sources",
+          "calibration": "Calibration",
+          "calibration_scale": "Calibration scale",
+          "valve_mode": "Valve mode",
+          "open_offset": "Boost offset",
+          "min_temp": "Minimum temperature",
+          "max_temp": "Maximum temperature",
+          "hysteresis": "Hysteresis",
+          "off_setpoint": "Off setpoint",
+          "valve_command_interval_seconds": "Valve command interval",
+          "window_sensors": "Window sensors",
+          "demand_fallback_sensors": "Heat required sensors"
+        }
+      },
+      "edit_room": {
+        "title": "Edit a room",
+        "data": {
+          "room_id": "Room"
+        }
+      },
+      "edit_room_form": {
+        "title": "Edit a room",
+        "data": {
+          "name": "Name",
+          "area_id": "Area",
+          "valves": "Valves",
+          "sources": "Temperature sources",
+          "calibration": "Calibration",
+          "calibration_scale": "Calibration scale",
+          "valve_mode": "Valve mode",
+          "open_offset": "Boost offset",
+          "min_temp": "Minimum temperature",
+          "max_temp": "Maximum temperature",
+          "hysteresis": "Hysteresis",
+          "off_setpoint": "Off setpoint",
+          "valve_command_interval_seconds": "Valve command interval",
+          "window_sensors": "Window sensors",
+          "demand_fallback_sensors": "Heat required sensors"
+        }
+      },
+      "remove_room": {
+        "title": "Remove a room",
+        "data": {
+          "room_id": "Room"
+        }
+      },
+      "house_settings": {
+        "title": "House settings",
+        "data": {
+          "name": "Name",
+          "boiler_entity": "Boiler",
+          "boiler_on_temperature": "Boiler on temperature",
+          "boiler_off_temperature": "Boiler off temperature",
+          "outdoor_sources": "Outdoor temperature sources",
+          "lockout_temperature": "Lockout temperature",
+          "lockout_hysteresis": "Lockout hysteresis",
+          "min_on_seconds": "Minimum on time",
+          "min_off_seconds": "Minimum off time",
+          "update_interval_seconds": "Update interval",
+          "dry_run": "Dry run",
+          "master_enabled": "Master enable",
+          "simulation": "Simulation house"
+        }
       }
+    },
+    "error": {
+      "invalid_room": "A room needs at least one valve and at least one source.",
+      "shared_entity": "Two rooms claim one valve or one source."
+    },
+    "abort": {
+      "no_rooms": "The house has no room to change."
     }
   },
   "title": "Room Climate"
