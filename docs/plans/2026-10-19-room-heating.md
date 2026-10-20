@@ -4,8 +4,9 @@
 > this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the Home Assistant custom integration `room_climate` from
-`docs/room-heating.spec.md`. The integration groups TRVs and temperature sensors into rooms,
-decides the room demand, and decides the Hive boiler state.
+`docs/room-heating.spec.md`. The integration groups Hive TRVs and temperature sensors into
+rooms, drives the valves, and decides the Hive boiler state. It depends on no other custom
+integration.
 
 **Architecture:** One config entry holds the house, and its options hold the room list. A pure
 module `control.py` holds every decision rule and imports no Home Assistant code. A
@@ -33,15 +34,19 @@ Copy these rules into every task brief. They come from the spec and from the rep
   template.
 - Tests run in seconds. No test sleeps, and no test waits for the clock. Use
   `async_fire_time_changed` and a frozen clock.
-- No test calls the live Home Assistant instance, and no test calls `climate.heating_heat`.
-- The component never commands `climate.heating_water`.
-- Default values, in one place: `boiler_on_temperature` 31.0, `boiler_off_temperature` 15.0,
-  `lockout_temperature` 18.0, `lockout_hysteresis` 1.0, `min_on_seconds` 300,
-  `min_off_seconds` 300, `update_interval_seconds` 30, `hysteresis` 0.2, `off_setpoint` 5.0,
-  `dry_run` true.
+- No test calls the live Home Assistant instance. No test writes to a valve.
+- The component never commands `climate.heating_water`, `switch.<trv>_heat_available` or
+  `select.<trv>_programming_operation_mode`.
+- The component takes no code from Better Thermostat (AGPL-3.0). The algorithms are
+  reimplemented from the spec.
+- Default values, in one place in `const.py`: `boiler_on_temperature` 31.0,
+  `boiler_off_temperature` 15.0, `lockout_temperature` 18.0, `lockout_hysteresis` 1.0,
+  `min_on_seconds` 300, `min_off_seconds` 300, `update_interval_seconds` 30, `hysteresis` 0.2,
+  `off_setpoint` 5.0, `valve_command_interval_seconds` 300, `calibration_scale` 100,
+  `open_offset` 2.0, `ema_seconds` 1800, `dry_run` true.
 - The domain is `room_climate`. The manifest requires `"version"`, because HACS updates a
   custom integration by the version.
-- The manifest declares `requirements: ["pydantic>=2.11,<3"]`.
+- The manifest declares `requirements: ["pydantic>=2.11,<3"]` and no custom integration.
 
 ## Environment facts that constrain the tasks
 
@@ -50,10 +55,11 @@ Copy these rules into every task brief. They come from the spec and from the rep
   `uv add --dev pytest-homeassistant-custom-component`, then verify with
   `uv run python -c "import homeassistant.const as c; print(c.__version__)"`. If the version
   differs, pin the harness release that carries 2026.10.1.
-- The live instance has HACS, Better Thermostat 1.9.3, and an existing
-  `automation.heat_on_demand`. Task 11 disables that automation during the live run.
-- No write access to the Home Assistant filesystem exists from this host. HACS is the install
-  route.
+- One Hive TRV publishes `climate.<name>`, `sensor.<name>_local_temperature`,
+  `binary_sensor.<name>_heat_required`, `sensor.<name>_window_open_internal` and
+  `number.<name>_external_measured_room_sensor`. Entity ids in the tests must match that shape.
+- The live instance has HACS and Better Thermostat 1.9.3. Task 13 removes Better Thermostat
+  after the component works.
 
 ## Review Focus
 
@@ -61,50 +67,54 @@ These inputs are not in the spec's tables. Each one has a test in the task that 
 
 1. An outdoor source that is `unavailable` or `unknown` must not start a lockout. A failed
    weather station must not stop the heating.
-2. A room whose sources are all unusable must not call for heat, must hold its actuators at
-   `off_setpoint`, and must report `degraded`.
-3. An actuator that is `unavailable` must not raise, and the room's other actuators must still
-   receive the setpoint.
-4. A setpoint at or below `min_temp`, and a mode of `off`, must both release the room and stop
-   the boiler when no other room calls.
-5. A lockout that arrives while the boiler runs must stop the boiler at once, inside
-   `min_on_seconds`.
+2. A room whose sources are all unusable must not call for heat, must hold its valves at
+   `off_setpoint`, and must report `degraded` — unless a `demand_fallback_sensors` entity is
+   `on`, which is the one case that calls without a temperature.
+3. A valve that is `unavailable` must not raise, and the other valves of the room must still
+   receive the target.
+4. A window sensor in the state `open` must suspend the demand at once, and the valve of the
+   room must move to `off_setpoint` without waiting for the command interval.
+5. A boiler command that the timing guard defers must not be sent, and a lockout or a master
+   switch off must not be deferred.
+6. A calibration write must never reach a valve of another room, and it must not repeat while
+   the room temperature moves less than 0.1 °C.
 
 ---
 
-### Task 1: Repository scaffold and the import guard
+### Task 1: Repository scaffold, import guard and licence
 
 **Files:**
-- Create: `pyproject.toml`, `Makefile`, `.gitignore`, `hacs.json`
+- Create: `pyproject.toml`, `Makefile`, `.gitignore`, `hacs.json`, `LICENSE`
 - Create: `custom_components/room_climate/__init__.py`, `const.py`, `manifest.json`
 - Create: `custom_components/room_climate/translations/en.json`
 - Create: `tests/conftest.py`, `tests/test_package_layout.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: the package `custom_components.room_climate`, the constant `DOMAIN`,
-  the constant `DEFAULT_*` values, and the test fixture `enable_custom_integrations`.
+- Produces: the package `custom_components.room_climate`, the constant `DOMAIN`, the
+  `DEFAULT_*` values, the `REASON_*` values and the `STATUS_*` values.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # tests/test_package_layout.py
-"""The layout rules the component must hold."""
+"""The layout and the licence rules the component must hold."""
 
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 
-COMPONENT = pathlib.Path(__file__).parents[1] / "custom_components" / "room_climate"
+ROOT = pathlib.Path(__file__).parents[1]
+COMPONENT = ROOT / "custom_components" / "room_climate"
 
 
 def test_domain_matches_directory() -> None:
-    import json
-
     manifest = json.loads((COMPONENT / "manifest.json").read_text())
     assert manifest["domain"] == COMPONENT.name
     assert manifest["version"]
+    assert manifest["requirements"] == ["pydantic>=2.11,<3"]
 
 
 def test_control_module_has_no_home_assistant_import() -> None:
@@ -117,6 +127,10 @@ def test_control_module_has_no_home_assistant_import() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
     assert not [name for name in imported if name.startswith("homeassistant")]
+
+
+def test_repository_carries_a_licence() -> None:
+    assert (ROOT / "LICENSE").read_text().strip()
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -167,7 +181,25 @@ CONF_MIN_OFF_SECONDS = "min_off_seconds"
 CONF_UPDATE_INTERVAL_SECONDS = "update_interval_seconds"
 CONF_DRY_RUN = "dry_run"
 CONF_MASTER_ENABLED = "master_enabled"
+CONF_EMA_SECONDS = "ema_seconds"
 CONF_ROOMS = "rooms"
+
+CONF_ROOM_ID = "room_id"
+CONF_NAME = "name"
+CONF_AREA_ID = "area_id"
+CONF_VALVES = "valves"
+CONF_SOURCES = "sources"
+CONF_CALIBRATION = "calibration"
+CONF_CALIBRATION_SCALE = "calibration_scale"
+CONF_VALVE_MODE = "valve_mode"
+CONF_OPEN_OFFSET = "open_offset"
+CONF_MIN_TEMP = "min_temp"
+CONF_MAX_TEMP = "max_temp"
+CONF_HYSTERESIS = "hysteresis"
+CONF_OFF_SETPOINT = "off_setpoint"
+CONF_VALVE_COMMAND_INTERVAL_SECONDS = "valve_command_interval_seconds"
+CONF_WINDOW_SENSORS = "window_sensors"
+CONF_DEMAND_FALLBACK_SENSORS = "demand_fallback_sensors"
 
 DEFAULT_BOILER_ENTITY = "climate.heating_heat"
 DEFAULT_BOILER_ON_TEMPERATURE = 31.0
@@ -178,9 +210,26 @@ DEFAULT_LOCKOUT_HYSTERESIS = 1.0
 DEFAULT_MIN_ON_SECONDS = 300
 DEFAULT_MIN_OFF_SECONDS = 300
 DEFAULT_UPDATE_INTERVAL_SECONDS = 30
+DEFAULT_EMA_SECONDS = 1800
 DEFAULT_HYSTERESIS = 0.2
 DEFAULT_OFF_SETPOINT = 5.0
+DEFAULT_OPEN_OFFSET = 2.0
+DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS = 300
+DEFAULT_CALIBRATION_SCALE = 100
 DEFAULT_DRY_RUN = True
+
+CALIBRATION_EXTERNAL = "external_sensor"
+CALIBRATION_NONE = "none"
+VALVE_MODE_MODULATE = "modulate"
+VALVE_MODE_BOOST = "boost"
+
+CALIBRATION_MIN_TEMPERATURE = 5.0
+CALIBRATION_MAX_TEMPERATURE = 35.0
+CALIBRATION_TOLERANCE_C = 0.1
+SETPOINT_STEP = 0.5
+REPEAT_THRESHOLD = 0.25
+MIN_PLAUSIBLE_TEMPERATURE = -20.0
+MAX_PLAUSIBLE_TEMPERATURE = 60.0
 
 REASON_MASTER_OFF = "master_off"
 REASON_LOCKOUT = "lockout"
@@ -195,15 +244,6 @@ STATUS_DRY_RUN = "dry_run"
 STATUS_DEGRADED = "degraded"
 
 SERVICE_RECOMPUTE = "recompute"
-```
-
-```json
-// hacs.json
-{
-  "name": "Room Climate",
-  "render_readme": true,
-  "homeassistant": "2026.10.0"
-}
 ```
 
 ```toml
@@ -242,15 +282,18 @@ typecheck:
 check: lint typecheck test
 ```
 
+`LICENSE` carries the MIT text of the repository. The operator can change it in one file,
+because the component copies no AGPL-3.0 code.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_package_layout.py -v`
-Expected: PASS, two tests.
+Expected: PASS, three tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add pyproject.toml Makefile .gitignore hacs.json custom_components tests
+git add pyproject.toml Makefile .gitignore hacs.json LICENSE custom_components tests
 git commit -m "scaffold room_climate integration"
 ```
 
@@ -263,10 +306,9 @@ git commit -m "scaffold room_climate integration"
 - Test: `tests/test_models.py`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `TemperatureSource`, `RoomConfig`, `HouseConfig`, `RuntimeRoom`,
-  `ControlInput`, `RoomCommand`, `BoilerCommand`, `ControlOutput`, and
-  `HouseConfig.from_options(options: Mapping[str, Any]) -> HouseConfig`.
+- Consumes: `const.py`.
+- Produces: `TemperatureSource`, `RoomConfig`, `HouseConfig`, `HouseConfig.from_options`,
+  `RuntimeRoom`, `ControlInput`, `RoomCommand`, `BoilerCommand`, `ControlOutput`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -281,29 +323,31 @@ from custom_components.room_climate.models import HouseConfig, RoomConfig, Tempe
 from pydantic import ValidationError
 
 
+def room(room_id: str = "front_room", **overrides: object) -> RoomConfig:
+    payload: dict[str, object] = {
+        "room_id": room_id,
+        "name": room_id.title(),
+        "valves": (f"climate.trv_{room_id}",),
+        "sources": (TemperatureSource(entity_id=f"sensor.{room_id}_temperature"),),
+    }
+    payload.update(overrides)
+    return RoomConfig(**payload)
+
+
 def house(**overrides: object) -> HouseConfig:
     payload: dict[str, object] = {
         "boiler_entity": "climate.heating_heat",
-        "boiler_on_temperature": 31.0,
-        "boiler_off_temperature": 15.0,
         "outdoor_sources": ("sensor.outdoor_temperature",),
-        "lockout_temperature": 18.0,
-        "rooms": (
-            RoomConfig(
-                room_id="front_room",
-                name="Front Room",
-                actuators=("climate.trv_front_room",),
-                sources=(TemperatureSource(entity_id="sensor.trv_front_room_local_temperature"),),
-            ),
-        ),
+        "rooms": (room(),),
     }
     payload.update(overrides)
     return HouseConfig(**payload)
 
 
-def test_weights_scale_the_mean() -> None:
-    source = TemperatureSource(entity_id="sensor.a", weight=2.0)
-    assert source.weight == 2.0
+def test_a_room_keeps_its_valves_and_weights() -> None:
+    config = room(sources=(TemperatureSource(entity_id="sensor.a", weight=3.0),))
+    assert config.valves == ("climate.trv_front_room",)
+    assert config.sources[0].weight == 3.0
 
 
 @pytest.mark.parametrize("weight", [0.0, -1.0])
@@ -312,46 +356,36 @@ def test_weight_must_be_positive(weight: float) -> None:
         TemperatureSource(entity_id="sensor.a", weight=weight)
 
 
-def test_room_needs_one_actuator() -> None:
+def test_a_room_needs_one_valve_and_one_source() -> None:
     with pytest.raises(ValidationError):
-        RoomConfig(room_id="front_room", name="Front Room", actuators=(), sources=())
+        room(valves=())
+    with pytest.raises(ValidationError):
+        room(sources=())
 
 
-def test_house_rejects_one_actuator_in_two_rooms() -> None:
-    shared = RoomConfig(
-        room_id="a",
-        name="A",
-        actuators=("climate.trv_front_room",),
-        sources=(TemperatureSource(entity_id="sensor.a"),),
-    )
-    other = RoomConfig(
-        room_id="b",
-        name="B",
-        actuators=("climate.trv_front_room",),
-        sources=(TemperatureSource(entity_id="sensor.b"),),
-    )
+def test_house_rejects_one_valve_in_two_rooms() -> None:
+    other = room("back_room", valves=("climate.trv_front_room",))
     with pytest.raises(ValidationError) as error:
-        house(rooms=(shared, other))
+        house(rooms=(room(), other))
     assert "trv_front_room" in str(error.value)
-    assert "A" in str(error.value) and "B" in str(error.value)
+    assert "Front Room" in str(error.value) and "Back Room" in str(error.value)
 
 
 def test_house_rejects_one_source_in_two_rooms() -> None:
-    first = RoomConfig(
-        room_id="a",
-        name="A",
-        actuators=("climate.trv_a",),
-        sources=(TemperatureSource(entity_id="sensor.shared"),),
-    )
-    second = RoomConfig(
-        room_id="b",
-        name="B",
-        actuators=("climate.trv_b",),
-        sources=(TemperatureSource(entity_id="sensor.shared"),),
-    )
+    other = room("back_room", sources=(TemperatureSource(entity_id="sensor.front_room_temperature"),))
     with pytest.raises(ValidationError) as error:
-        house(rooms=(first, second))
-    assert "sensor.shared" in str(error.value)
+        house(rooms=(room(), other))
+    assert "sensor.front_room_temperature" in str(error.value)
+
+
+def test_modulate_requires_the_calibration_feed() -> None:
+    with pytest.raises(ValidationError):
+        room(valve_mode="modulate", calibration="none")
+
+
+def test_boost_works_without_the_calibration_feed() -> None:
+    config = room(valve_mode="boost", calibration="none")
+    assert config.open_offset == 2.0
 
 
 def test_on_temperature_must_exceed_off_temperature() -> None:
@@ -362,22 +396,21 @@ def test_on_temperature_must_exceed_off_temperature() -> None:
 def test_from_options_round_trips_the_entry_payload() -> None:
     payload = {
         "boiler_entity": "climate.heating_heat",
-        "boiler_on_temperature": 31.0,
-        "boiler_off_temperature": 15.0,
         "outdoor_sources": ["sensor.outdoor_temperature"],
-        "lockout_temperature": 18.0,
         "rooms": [
             {
                 "room_id": "front_room",
                 "name": "Front Room",
-                "actuators": ["climate.trv_front_room"],
-                "sources": [{"entity_id": "sensor.trv_front_room_local_temperature"}],
+                "valves": ["climate.trv_front_room"],
+                "sources": [{"entity_id": "sensor.front_room_temperature"}],
             }
         ],
     }
     config = HouseConfig.from_options(payload)
-    assert config.rooms[0].actuators == ("climate.trv_front_room",)
-    assert config.rooms[0].sources[0].weight == 1.0
+    assert config.rooms[0].valves == ("climate.trv_front_room",)
+    assert config.rooms[0].calibration == "external_sensor"
+    assert config.rooms[0].valve_mode == "modulate"
+    assert config.dry_run is True
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -399,17 +432,24 @@ from typing import Any, Literal, Mapping, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .const import (
+    CALIBRATION_EXTERNAL,
+    CALIBRATION_NONE,
     DEFAULT_BOILER_ENTITY,
     DEFAULT_BOILER_OFF_TEMPERATURE,
     DEFAULT_BOILER_ON_TEMPERATURE,
+    DEFAULT_CALIBRATION_SCALE,
+    DEFAULT_EMA_SECONDS,
     DEFAULT_HYSTERESIS,
     DEFAULT_LOCKOUT_HYSTERESIS,
     DEFAULT_LOCKOUT_TEMPERATURE,
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
     DEFAULT_OFF_SETPOINT,
+    DEFAULT_OPEN_OFFSET,
     DEFAULT_OUTDOOR_SOURCES,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
+    DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
+    VALVE_MODE_MODULATE,
 )
 
 FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -425,20 +465,36 @@ class TemperatureSource(BaseModel):
 
 
 class RoomConfig(BaseModel):
-    """The actuators and the temperature sources of one room."""
+    """The valves and the temperature sources of one room."""
 
     model_config = FROZEN
 
     room_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    actuators: tuple[str, ...] = Field(min_length=1)
+    valves: tuple[str, ...] = Field(min_length=1)
     sources: tuple[TemperatureSource, ...] = Field(min_length=1)
     area_id: str | None = None
+    calibration: Literal["external_sensor", "none"] = CALIBRATION_EXTERNAL
+    calibration_scale: int = Field(default=DEFAULT_CALIBRATION_SCALE, ge=1, le=1000)
+    valve_mode: Literal["modulate", "boost"] = VALVE_MODE_MODULATE
+    open_offset: float = Field(default=DEFAULT_OPEN_OFFSET, ge=0.0, le=5.0)
     min_temp: float = Field(default=5.0, ge=5.0, le=20.0)
     max_temp: float = Field(default=30.0, ge=15.0, le=35.0)
     hysteresis: float = Field(default=DEFAULT_HYSTERESIS, ge=0.0, le=2.0)
     off_setpoint: float = Field(default=DEFAULT_OFF_SETPOINT, ge=5.0, le=12.0)
-    setpoint_offset: float = Field(default=0.0, ge=-3.0, le=3.0)
+    valve_command_interval_seconds: int = Field(
+        default=DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS, ge=0, le=3600
+    )
+    window_sensors: tuple[str, ...] = ()
+    demand_fallback_sensors: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_room(self) -> Self:
+        if self.valve_mode == VALVE_MODE_MODULATE and self.calibration == CALIBRATION_NONE:
+            raise ValueError(
+                f"room {self.name} cannot use valve_mode modulate without the calibration feed"
+            )
+        return self
 
 
 class HouseConfig(BaseModel):
@@ -460,6 +516,7 @@ class HouseConfig(BaseModel):
     update_interval_seconds: int = Field(default=DEFAULT_UPDATE_INTERVAL_SECONDS, ge=10, le=600)
     dry_run: bool = True
     master_enabled: bool = True
+    ema_seconds: int = Field(default=DEFAULT_EMA_SECONDS, ge=60, le=10800)
     rooms: tuple[RoomConfig, ...] = ()
 
     @model_validator(mode="after")
@@ -468,30 +525,106 @@ class HouseConfig(BaseModel):
             raise ValueError("boiler_on_temperature must exceed boiler_off_temperature")
         if not self.outdoor_sources:
             raise ValueError("at least one outdoor source is required")
-        for kind, extract in (
-            ("actuator", lambda room: room.actuators),
-            ("source", lambda room: tuple(source.entity_id for source in room.sources)),
-        ):
-            owners: dict[str, str] = {}
-            for room in self.rooms:
-                for entity_id in extract(room):
-                    if entity_id in owners:
-                        raise ValueError(
-                            f"{kind} {entity_id} is claimed by {owners[entity_id]} and {room.name}"
-                        )
-                    owners[entity_id] = room.name
+        seen: dict[str, str] = {}
+        for room in self.rooms:
+            for entity_id in (room.room_id, *room.valves):
+                self._claim(seen, entity_id, room.name)
+        seen = {}
+        for room in self.rooms:
+            for source in room.sources:
+                self._claim(seen, source.entity_id, room.name)
         return self
+
+    @staticmethod
+    def _claim(seen: dict[str, str], entity_id: str, room_name: str) -> None:
+        owner = seen.get(entity_id)
+        if owner is not None:
+            raise ValueError(f"{entity_id} is claimed by {owner} and {room_name}")
+        seen[entity_id] = room_name
 
     @classmethod
     def from_options(cls, options: Mapping[str, Any]) -> HouseConfig:
         """Build the house model from the config entry options payload."""
         return cls.model_validate(dict(options))
+
+
+class RuntimeRoom(BaseModel):
+    """The state of one room that survives between cycles."""
+
+    model_config = FROZEN
+
+    room_id: str
+    target_temperature: float | None = None
+    hvac_mode: Literal["off", "heat"] = "heat"
+    calling: bool = False
+    ema_temperature: float | None = None
+    updated_at: datetime | None = None
+
+
+class ControlInput(BaseModel):
+    """Everything one cycle reads."""
+
+    model_config = FROZEN
+
+    now: datetime
+    house: HouseConfig
+    temperatures: Mapping[str, float | None]
+    valve_demands: Mapping[str, bool]
+    window_states: Mapping[str, str]
+    runtimes: tuple[RuntimeRoom, ...]
+    last_actuator_targets: Mapping[str, float]
+    last_calibration_values: Mapping[str, float]
+    last_command_at: Mapping[str, datetime]
+    outdoor_lockout_active: bool
+    boiler_on: bool
+    boiler_state_since: datetime | None
+    master_enabled: bool
+    override_active: bool
+
+
+class RoomCommand(BaseModel):
+    """The commands and the reported state of one room."""
+
+    model_config = FROZEN
+
+    room_id: str
+    calling: bool
+    window_open: bool
+    room_temperature: float | None
+    ema_temperature: float | None
+    usable_sources: int
+    degraded: bool
+    valve_targets: Mapping[str, float]
+    calibration_values: Mapping[str, float]
+
+
+class BoilerCommand(BaseModel):
+    """The wanted boiler state of one cycle."""
+
+    model_config = FROZEN
+
+    turn_on: bool
+    reason: str
+    send: bool
+
+
+class ControlOutput(BaseModel):
+    """The result of one cycle."""
+
+    model_config = FROZEN
+
+    rooms: tuple[RoomCommand, ...]
+    boiler: BoilerCommand
+    lockout_active: bool
+    outdoor_temperature: float | None
+    house_ema_temperature: float | None
+    status: str
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_models.py -v`
-Expected: PASS, eight tests.
+Expected: PASS, eleven tests.
 
 - [ ] **Step 5: Commit**
 
@@ -505,13 +638,14 @@ git commit -m "add room climate configuration models"
 ### Task 3: Weighted room temperature
 
 **Files:**
-- Create: `custom_components/room_climate/control.py`
+- Create: `custom_components/room_climate/control.py` (first functions)
 - Test: `tests/test_control_temperature.py`
 
 **Interfaces:**
-- Consumes: `TemperatureSource` from `models.py`.
+- Consumes: `TemperatureSource`, `MIN_PLAUSIBLE_TEMPERATURE`, `MAX_PLAUSIBLE_TEMPERATURE`.
 - Produces: `weighted_temperature(sources: Sequence[TemperatureSource],
-  temperatures: Mapping[str, float | None]) -> float | None`.
+  temperatures: Mapping[str, float | None]) -> float | None`,
+  `usable_source_count(sources, temperatures) -> int`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -521,7 +655,7 @@ git commit -m "add room climate configuration models"
 
 from __future__ import annotations
 
-from custom_components.room_climate.control import weighted_temperature
+from custom_components.room_climate.control import usable_source_count, weighted_temperature
 from custom_components.room_climate.models import TemperatureSource
 
 
@@ -530,14 +664,18 @@ def source(entity_id: str, weight: float = 1.0) -> TemperatureSource:
 
 
 def test_one_source_is_the_room_temperature() -> None:
-    result = weighted_temperature((source("sensor.trv"),), {"sensor.trv": 21.4})
-    assert result == 21.4
+    assert weighted_temperature((source("sensor.trv"),), {"sensor.trv": 21.4}) == 21.4
 
 
 def test_weighted_mean_over_three_sources() -> None:
     sources = (source("sensor.a", 1.0), source("sensor.b", 3.0), source("sensor.c", 1.0))
     values = {"sensor.a": 20.0, "sensor.b": 22.0, "sensor.c": 24.0}
     assert weighted_temperature(sources, values) == 22.0
+
+
+def test_a_heavy_trv_weight_pulls_the_mean_towards_the_valve() -> None:
+    sources = (source("sensor.room", 1.0), source("sensor.trv", 3.0))
+    assert weighted_temperature(sources, {"sensor.room": 20.0, "sensor.trv": 24.0}) == 23.0
 
 
 def test_unusable_sources_are_dropped() -> None:
@@ -551,14 +689,15 @@ def test_all_sources_unusable_gives_no_temperature() -> None:
     assert weighted_temperature(sources, {"sensor.a": None, "sensor.b": None}) is None
 
 
-def test_impossible_value_is_dropped() -> None:
+def test_an_impossible_value_is_dropped() -> None:
     sources = (source("sensor.a"), source("sensor.b"))
     assert weighted_temperature(sources, {"sensor.a": 900.0, "sensor.b": 21.0}) == 21.0
 
 
-def test_one_source_alone_can_be_the_room_temperature() -> None:
-    sources = (source("sensor.a", 1.0), source("sensor.b", 3.0))
-    assert weighted_temperature(sources, {"sensor.a": None, "sensor.b": 22.5}) == 22.5
+def test_usable_source_count_matches_the_mean() -> None:
+    sources = (source("sensor.a"), source("sensor.b"))
+    assert usable_source_count(sources, {"sensor.a": 21.0, "sensor.b": None}) == 1
+    assert usable_source_count(sources, {"sensor.a": 21.0, "sensor.b": 22.0}) == 2
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -566,7 +705,7 @@ def test_one_source_alone_can_be_the_room_temperature() -> None:
 Run: `uv run pytest tests/test_control_temperature.py -v`
 Expected: FAIL with `ImportError: cannot import name 'weighted_temperature'`.
 
-- [ ] **Step 3: Write the function**
+- [ ] **Step 3: Write the functions**
 
 ```python
 # custom_components/room_climate/control.py
@@ -576,24 +715,32 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from .const import MAX_PLAUSIBLE_TEMPERATURE, MIN_PLAUSIBLE_TEMPERATURE
 from .models import TemperatureSource
 
-MIN_PLAUSIBLE_TEMPERATURE = -20.0
-MAX_PLAUSIBLE_TEMPERATURE = 60.0
+
+def _plausible(value: float | None) -> bool:
+    return value is not None and MIN_PLAUSIBLE_TEMPERATURE <= value <= MAX_PLAUSIBLE_TEMPERATURE
+
+
+def usable_source_count(
+    sources: Sequence[TemperatureSource], temperatures: Mapping[str, float | None]
+) -> int:
+    """Count the sources that carry a plausible reading."""
+    return sum(1 for source in sources if _plausible(temperatures.get(source.entity_id)))
 
 
 def weighted_temperature(
     sources: Sequence[TemperatureSource], temperatures: Mapping[str, float | None]
 ) -> float | None:
     """Return the weighted mean of the usable sources, or None when none is usable."""
-    total_weight = 0.0
     total = 0.0
+    total_weight = 0.0
     for source in sources:
         value = temperatures.get(source.entity_id)
-        if value is None:
+        if not _plausible(value):
             continue
-        if not MIN_PLAUSIBLE_TEMPERATURE <= value <= MAX_PLAUSIBLE_TEMPERATURE:
-            continue
+        assert value is not None
         total += source.weight * value
         total_weight += source.weight
     if total_weight == 0.0:
@@ -604,7 +751,7 @@ def weighted_temperature(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_temperature.py -v`
-Expected: PASS, six tests.
+Expected: PASS, seven tests.
 
 - [ ] **Step 5: Commit**
 
@@ -615,7 +762,7 @@ git commit -m "add the weighted room temperature"
 
 ---
 
-### Task 4: The outdoor lockout
+### Task 4: Outdoor temperature and the lockout
 
 **Files:**
 - Modify: `custom_components/room_climate/control.py`
@@ -624,7 +771,7 @@ git commit -m "add the weighted room temperature"
 **Interfaces:**
 - Consumes: nothing new.
 - Produces: `outdoor_temperature(sources: Sequence[str], temperatures: Mapping[str, float | None])
-  -> float | None` and `next_lockout(active: bool, outdoor: float | None, threshold: float,
+  -> float | None`, `next_lockout(active: bool, outdoor: float | None, threshold: float,
   hysteresis: float) -> bool`.
 
 - [ ] **Step 1: Write the failing test**
@@ -664,6 +811,11 @@ def test_outdoor_mean_over_the_usable_sources() -> None:
     assert outdoor_temperature(("sensor.outdoor", "weather.home"), values) == 11.0
 
 
+def test_outdoor_temperature_ignores_a_missing_reading() -> None:
+    values = {"sensor.outdoor": None, "weather.home": 12.0}
+    assert outdoor_temperature(("sensor.outdoor", "weather.home"), values) == 12.0
+
+
 def test_outdoor_temperature_without_a_reading() -> None:
     assert outdoor_temperature(("sensor.outdoor",), {"sensor.outdoor": None}) is None
 ```
@@ -682,15 +834,10 @@ def outdoor_temperature(
     sources: Sequence[str], temperatures: Mapping[str, float | None]
 ) -> float | None:
     """Return the mean of the usable outdoor readings, or None when none is usable."""
-    usable = [
-        value
-        for entity_id in sources
-        if (value := temperatures.get(entity_id)) is not None
-        and MIN_PLAUSIBLE_TEMPERATURE <= value <= MAX_PLAUSIBLE_TEMPERATURE
-    ]
+    usable = [value for entity_id in sources if _plausible(value := temperatures.get(entity_id))]
     if not usable:
         return None
-    return sum(usable) / len(usable)
+    return sum(value for value in usable if value is not None) / len(usable)
 
 
 def next_lockout(active: bool, outdoor: float | None, threshold: float, hysteresis: float) -> bool:
@@ -705,7 +852,7 @@ def next_lockout(active: bool, outdoor: float | None, threshold: float, hysteres
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_lockout.py -v`
-Expected: PASS, seven tests.
+Expected: PASS, eight tests.
 
 - [ ] **Step 5: Commit**
 
@@ -716,29 +863,27 @@ git commit -m "add the outdoor lockout"
 
 ---
 
-### Task 5: The room demand latch and the actuator targets
+### Task 5: The room demand latch
 
 **Files:**
 - Modify: `custom_components/room_climate/control.py`
-- Test: `tests/test_control_room.py`
+- Test: `tests/test_control_demand.py`
 
 **Interfaces:**
-- Consumes: `RoomConfig`, `RuntimeRoom`, `Mapping[str, float]`.
-- Produces: `next_calling(previous: bool, temperature: float | None, target: float | None,
-  hvac_mode: str, room: RoomConfig) -> bool`, `round_setpoint(value: float) -> float`, and
-  `actuator_targets(room: RoomConfig, calling: bool, target: float | None,
-  last_sent: Mapping[str, float]) -> Mapping[str, float]`.
+- Consumes: `RoomConfig`.
+- Produces: `next_calling(previous: bool, room: RoomConfig, target: float | None,
+  hvac_mode: str, temperature: float | None, window_open: bool, fallback_demand: bool) -> bool`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_control_room.py
-"""The room demand latch and the actuator command."""
+# tests/test_control_demand.py
+"""The demand latch, the window suspension and the fallback demand."""
 
 from __future__ import annotations
 
 import pytest
-from custom_components.room_climate.control import actuator_targets, next_calling, round_setpoint
+from custom_components.room_climate.control import next_calling
 from custom_components.room_climate.models import RoomConfig, TemperatureSource
 
 
@@ -746,27 +891,19 @@ def room(**overrides: object) -> RoomConfig:
     payload: dict[str, object] = {
         "room_id": "front_room",
         "name": "Front Room",
-        "actuators": ("climate.trv_front_room",),
-        "sources": (TemperatureSource(entity_id="sensor.trv_front_room_local_temperature"),),
+        "valves": ("climate.trv_front_room",),
+        "sources": (TemperatureSource(entity_id="sensor.front_room_temperature"),),
     }
     payload.update(overrides)
     return RoomConfig(**payload)
 
 
-def test_demand_starts_below_the_band() -> None:
-    assert next_calling(False, 20.7, 21.0, "heat", room()) is True
-
-
-def test_demand_does_not_start_inside_the_band() -> None:
-    assert next_calling(False, 21.0, 21.0, "heat", room()) is False
-
-
-def test_demand_holds_inside_the_band() -> None:
-    assert next_calling(True, 21.1, 21.0, "heat", room()) is True
-
-
-def test_demand_stops_above_the_band() -> None:
-    assert next_calling(True, 21.3, 21.0, "heat", room()) is False
+@pytest.mark.parametrize(
+    ("temperature", "previous", "expected"),
+    [(20.7, False, True), (20.8, False, False), (21.0, True, True), (21.21, True, False)],
+)
+def test_the_latch_band(temperature: float, previous: bool, expected: bool) -> None:
+    assert next_calling(previous, room(), 21.0, "heat", temperature, False, False) is expected
 
 
 @pytest.mark.parametrize(
@@ -776,127 +913,417 @@ def test_demand_stops_above_the_band() -> None:
 def test_a_room_that_cannot_heat_never_calls(
     temperature: float | None, target: float | None, mode: str
 ) -> None:
-    assert next_calling(False, temperature, target, mode, room()) is False
+    assert next_calling(False, room(), target, mode, temperature, False, False) is False
 
 
-@pytest.mark.parametrize(("raw", "expected"), [(20.0, 20.0), (20.24, 20.0), (20.26, 20.5), (20.75, 21.0)])
-def test_setpoints_round_to_the_half_degree(raw: float, expected: float) -> None:
-    assert round_setpoint(raw) == expected
+def test_a_window_suspends_the_demand() -> None:
+    assert next_calling(True, room(), 21.0, "heat", 19.0, True, False) is False
 
 
-def test_calling_sets_the_actuator_with_the_offset() -> None:
-    config = room(
-        actuators=("climate.trv_front_room", "climate.bt_front_room"),
-        setpoint_offset=0.5,
-    )
-    assert actuator_targets(config, True, 21.0, {}) == {
-        "climate.trv_front_room": 21.5,
-        "climate.bt_front_room": 21.5,
-    }
+def test_the_valve_demand_carries_a_room_without_a_temperature() -> None:
+    assert next_calling(False, room(), 21.0, "heat", None, False, True) is True
 
 
-def test_not_calling_holds_the_actuator_at_the_off_setpoint() -> None:
-    assert actuator_targets(room(), False, 21.0, {}) == {"climate.trv_front_room": 5.0}
-
-
-def test_a_sent_target_is_not_repeated() -> None:
-    sent = {"climate.trv_front_room": 21.5}
-    assert actuator_targets(room(setpoint_offset=0.5), True, 21.0, sent) == {}
-
-
-def test_a_target_is_clamped_to_the_room_limits() -> None:
-    config = room(max_temp=22.0, setpoint_offset=0.0)
-    assert actuator_targets(config, True, 25.0, {}) == {"climate.trv_front_room": 22.0}
+def test_the_valve_demand_does_not_override_a_live_temperature() -> None:
+    assert next_calling(False, room(), 21.0, "heat", 21.5, False, True) is False
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `uv run pytest tests/test_control_room.py -v`
+Run: `uv run pytest tests/test_control_demand.py -v`
 Expected: FAIL with `ImportError: cannot import name 'next_calling'`.
+
+- [ ] **Step 3: Write the function**
+
+```python
+# appended to custom_components/room_climate/control.py
+
+def next_calling(
+    previous: bool,
+    room: RoomConfig,
+    target: float | None,
+    hvac_mode: str,
+    temperature: float | None,
+    window_open: bool,
+    fallback_demand: bool,
+) -> bool:
+    """Return the demand state of one room for the next cycle."""
+    if hvac_mode != "heat" or target is None or target <= room.min_temp:
+        return False
+    if window_open:
+        return False
+    if temperature is None:
+        return fallback_demand
+    if previous:
+        return temperature <= target + room.hysteresis
+    return temperature < target - room.hysteresis
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `uv run pytest tests/test_control_demand.py -v`
+Expected: PASS, thirteen tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate/control.py tests/test_control_demand.py
+git commit -m "add the room demand latch"
+```
+
+---
+
+### Task 6: The valve command
+
+**Files:**
+- Modify: `custom_components/room_climate/control.py`
+- Test: `tests/test_control_valves.py`
+
+**Interfaces:**
+- Consumes: `RoomConfig`.
+- Produces: `round_setpoint(value: float) -> float`,
+  `valve_targets(room: RoomConfig, *, blocked: bool, calling: bool, target: float | None,
+  last_sent: Mapping[str, float], last_command_at: Mapping[str, datetime],
+  now: datetime) -> Mapping[str, float]`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_control_valves.py
+"""The valve targets, the repeat rule and the command interval."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from custom_components.room_climate.control import round_setpoint, valve_targets
+from custom_components.room_climate.models import RoomConfig, TemperatureSource
+
+NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
+
+
+def room(**overrides: object) -> RoomConfig:
+    payload: dict[str, object] = {
+        "room_id": "front_room",
+        "name": "Front Room",
+        "valves": ("climate.trv_front_room",),
+        "sources": (TemperatureSource(entity_id="sensor.front_room_temperature"),),
+    }
+    payload.update(overrides)
+    return RoomConfig(**payload)
+
+
+def targets(config: RoomConfig, **overrides: object) -> dict[str, float]:
+    arguments: dict[str, object] = {
+        "blocked": False,
+        "calling": True,
+        "target": 21.0,
+        "last_sent": {},
+        "last_command_at": {},
+        "now": NOW,
+    }
+    arguments.update(overrides)
+    return dict(valve_targets(config, **arguments))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"), [(20.0, 20.0), (20.24, 20.0), (20.26, 20.5), (20.75, 21.0)]
+)
+def test_setpoints_round_to_the_half_degree(raw: float, expected: float) -> None:
+    assert round_setpoint(raw) == expected
+
+
+def test_modulate_holds_the_setpoint_even_when_satisfied() -> None:
+    assert targets(room(), calling=False) == {"climate.trv_front_room": 21.0}
+
+
+def test_boost_opens_above_the_setpoint_while_calling() -> None:
+    assert targets(room(valve_mode="boost", open_offset=2.0)) == {"climate.trv_front_room": 23.0}
+
+
+def test_boost_closes_when_satisfied() -> None:
+    assert targets(room(valve_mode="boost"), calling=False) == {"climate.trv_front_room": 5.0}
+
+
+def test_a_blocked_room_closes_its_valves() -> None:
+    assert targets(room(), blocked=True) == {"climate.trv_front_room": 5.0}
+
+
+def test_the_setpoint_clamps_to_the_room_limits() -> None:
+    assert targets(room(max_temp=22.0), target=25.0) == {"climate.trv_front_room": 22.0}
+
+
+def test_a_sent_target_is_not_repeated() -> None:
+    assert targets(room(), last_sent={"climate.trv_front_room": 21.0}) == {}
+
+
+def test_a_due_but_recent_command_waits_for_the_interval() -> None:
+    sent_at = {"climate.trv_front_room": NOW - timedelta(seconds=60)}
+    assert targets(room(), target=23.0, last_command_at=sent_at) == {}
+
+
+def test_a_due_command_after_the_interval_is_sent() -> None:
+    sent_at = {"climate.trv_front_room": NOW - timedelta(seconds=400)}
+    assert targets(room(), target=23.0, last_command_at=sent_at) == {"climate.trv_front_room": 23.0}
+
+
+def test_closing_a_valve_is_never_deferred() -> None:
+    sent_at = {"climate.trv_front_room": NOW - timedelta(seconds=5)}
+    assert targets(room(valve_mode="boost"), calling=False, last_command_at=sent_at) == {
+        "climate.trv_front_room": 5.0
+    }
+
+
+def test_every_valve_of_the_room_receives_the_target() -> None:
+    config = room(valves=("climate.trv_left", "climate.trv_right"))
+    assert targets(config, target=22.0) == {
+        "climate.trv_left": 22.0,
+        "climate.trv_right": 22.0,
+    }
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `uv run pytest tests/test_control_valves.py -v`
+Expected: FAIL with `ImportError: cannot import name 'valve_targets'`.
 
 - [ ] **Step 3: Write the functions**
 
 ```python
 # appended to custom_components/room_climate/control.py
 
-SETPOINT_STEP = 0.5
-REPEAT_THRESHOLD = 0.25
+from datetime import datetime
+
+from .const import REPEAT_THRESHOLD, SETPOINT_STEP, VALVE_MODE_MODULATE
+from .models import RoomConfig
 
 
 def round_setpoint(value: float) -> float:
-    """Round a target temperature to the half degree step of the actuators."""
+    """Round a target temperature to the half degree step of the valves."""
     return round(value / SETPOINT_STEP) * SETPOINT_STEP
 
 
-def next_calling(
-    previous: bool,
-    temperature: float | None,
-    target: float | None,
-    hvac_mode: str,
+def valve_targets(
     room: RoomConfig,
-) -> bool:
-    """Return the demand state of one room for the next cycle."""
-    if hvac_mode != "heat" or target is None or target <= room.min_temp or temperature is None:
-        return False
-    if previous:
-        return temperature <= target + room.hysteresis
-    return temperature < target - room.hysteresis
-
-
-def actuator_targets(
-    room: RoomConfig, calling: bool, target: float | None, last_sent: Mapping[str, float]
+    *,
+    blocked: bool,
+    calling: bool,
+    target: float | None,
+    last_sent: Mapping[str, float],
+    last_command_at: Mapping[str, datetime],
+    now: datetime,
 ) -> Mapping[str, float]:
-    """Return the actuator commands of one room, omitting a target that is already sent."""
-    if calling and target is not None:
-        wanted = min(max(target + room.setpoint_offset, room.min_temp), room.max_temp)
-    else:
+    """Return the valve commands, honouring the repeat rule and the command interval."""
+    if blocked or target is None:
         wanted = room.off_setpoint
-    rounded = round_setpoint(wanted)
+    elif room.valve_mode == VALVE_MODE_MODULATE:
+        wanted = target
+    else:
+        wanted = target + room.open_offset if calling else room.off_setpoint
+    rounded = round_setpoint(min(max(wanted, room.min_temp), room.max_temp))
     commands: dict[str, float] = {}
-    for entity_id in room.actuators:
+    for entity_id in room.valves:
         sent = last_sent.get(entity_id)
         if sent is not None and abs(sent - rounded) < REPEAT_THRESHOLD:
             continue
+        if rounded != room.off_setpoint:
+            since = last_command_at.get(entity_id)
+            if since is not None and (now - since).total_seconds() < room.valve_command_interval_seconds:
+                continue
         commands[entity_id] = rounded
     return commands
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `uv run pytest tests/test_control_room.py -v`
-Expected: PASS, fifteen tests.
+Run: `uv run pytest tests/test_control_valves.py -v`
+Expected: PASS, sixteen tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add custom_components/room_climate/control.py tests/test_control_room.py
-git commit -m "add the room demand latch"
+git add custom_components/room_climate/control.py tests/test_control_valves.py
+git commit -m "add the valve command rules"
 ```
 
 ---
 
-### Task 6: The boiler decision
+### Task 7: The calibration feed
 
 **Files:**
-- Modify: `custom_components/room_climate/control.py`, `custom_components/room_climate/models.py`
-- Test: `tests/test_control_boiler.py`
+- Modify: `custom_components/room_climate/control.py`
+- Test: `tests/test_control_calibration.py`
 
 **Interfaces:**
-- Consumes: everything above.
-- Produces: `RuntimeRoom`, `ControlInput`, `RoomCommand`, `BoilerCommand`, `ControlOutput` in
-  `models.py`, and `decide(payload: ControlInput) -> ControlOutput` in `control.py`.
+- Consumes: `RoomConfig`.
+- Produces: `feed_entity_id(valve_entity_id: str) -> str`,
+  `calibration_values(room: RoomConfig, temperature: float | None,
+  last_written: Mapping[str, float]) -> Mapping[str, float]`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_control_boiler.py
-"""The boiler decision and its timing guards."""
+# tests/test_control_calibration.py
+"""The write of the room temperature into the valves."""
+
+from __future__ import annotations
+
+from custom_components.room_climate.control import calibration_values, feed_entity_id
+from custom_components.room_climate.models import RoomConfig, TemperatureSource
+
+
+def room(**overrides: object) -> RoomConfig:
+    payload: dict[str, object] = {
+        "room_id": "front_room",
+        "name": "Front Room",
+        "valves": ("climate.trv_front_room",),
+        "sources": (TemperatureSource(entity_id="sensor.front_room_temperature"),),
+    }
+    payload.update(overrides)
+    return RoomConfig(**payload)
+
+
+def test_the_feed_entity_follows_the_valve_object_id() -> None:
+    assert feed_entity_id("climate.trv_front_room") == "number.trv_front_room_external_measured_room_sensor"
+    assert (
+        feed_entity_id("climate.0x0011223344556677")
+        == "number.0x0011223344556677_external_measured_room_sensor"
+    )
+
+
+def test_the_room_temperature_is_scaled() -> None:
+    assert calibration_values(room(), 21.5, {}) == {
+        "number.trv_front_room_external_measured_room_sensor": 2150
+    }
+
+
+def test_a_custom_scale_is_honoured() -> None:
+    config = room(calibration_scale=10)
+    assert calibration_values(config, 21.5, {}) == {
+        "number.trv_front_room_external_measured_room_sensor": 215
+    }
+
+
+def test_the_value_clamps_to_the_valve_band() -> None:
+    assert calibration_values(room(), 1.0, {}) == {
+        "number.trv_front_room_external_measured_room_sensor": 500
+    }
+    assert calibration_values(room(), 40.0, {}) == {
+        "number.trv_front_room_external_measured_room_sensor": 3500
+    }
+
+
+def test_a_small_change_is_not_written() -> None:
+    written = {"number.trv_front_room_external_measured_room_sensor": 2150}
+    assert calibration_values(room(), 21.55, written) == {}
+
+
+def test_a_larger_change_is_written() -> None:
+    written = {"number.trv_front_room_external_measured_room_sensor": 2100}
+    assert calibration_values(room(), 21.5, written) == {
+        "number.trv_front_room_external_measured_room_sensor": 2150
+    }
+
+
+def test_a_room_without_a_temperature_writes_nothing() -> None:
+    assert calibration_values(room(), None, {}) == {}
+
+
+def test_a_room_with_the_calibration_off_writes_nothing() -> None:
+    config = room(calibration="none", valve_mode="boost")
+    assert calibration_values(config, 21.5, {}) == {}
+
+
+def test_every_valve_of_the_room_receives_the_value() -> None:
+    config = room(valves=("climate.trv_left", "climate.trv_right"))
+    assert set(calibration_values(config, 21.0, {})) == {
+        "number.trv_left_external_measured_room_sensor",
+        "number.trv_right_external_measured_room_sensor",
+    }
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `uv run pytest tests/test_control_calibration.py -v`
+Expected: FAIL with `ImportError: cannot import name 'calibration_values'`.
+
+- [ ] **Step 3: Write the functions**
+
+```python
+# appended to custom_components/room_climate/control.py
+
+from .const import (
+    CALIBRATION_EXTERNAL,
+    CALIBRATION_MAX_TEMPERATURE,
+    CALIBRATION_MIN_TEMPERATURE,
+    CALIBRATION_NONE,
+)
+
+FEED_SUFFIX = "_external_measured_room_sensor"
+
+
+def feed_entity_id(valve_entity_id: str) -> str:
+    """Return the feed entity of one valve."""
+    return f"number.{valve_entity_id.split('.', 1)[1]}{FEED_SUFFIX}"
+
+
+def calibration_values(
+    room: RoomConfig, temperature: float | None, last_written: Mapping[str, float]
+) -> Mapping[str, float]:
+    """Return the calibration writes of one room."""
+    if room.calibration == CALIBRATION_NONE or temperature is None:
+        return {}
+    clamped = min(max(temperature, CALIBRATION_MIN_TEMPERATURE), CALIBRATION_MAX_TEMPERATURE)
+    value = float(round(clamped * room.calibration_scale))
+    tolerance = CALIBRATION_TOLERANCE_C * room.calibration_scale
+    writes: dict[str, float] = {}
+    for valve in room.valves:
+        entity_id = feed_entity_id(valve)
+        previous = last_written.get(entity_id)
+        if previous is not None and abs(previous - value) < tolerance:
+            continue
+        writes[entity_id] = value
+    return writes
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `uv run pytest tests/test_control_calibration.py -v`
+Expected: PASS, nine tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate/control.py tests/test_control_calibration.py
+git commit -m "add the calibration feed"
+```
+
+---
+
+### Task 8: The graph average and the cycle decision
+
+**Files:**
+- Modify: `custom_components/room_climate/control.py`
+- Test: `tests/test_control_decide.py`
+
+**Interfaces:**
+- Consumes: everything above, `ControlInput`, `ControlOutput`.
+- Produces: `exponential_average(previous: float | None, value: float, elapsed_seconds: float,
+  tau_seconds: float) -> float`, `decide(payload: ControlInput) -> ControlOutput`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_control_decide.py
+"""The boiler decision, the timing guards and the cycle status."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from custom_components.room_climate.control import decide
+import pytest
+from custom_components.room_climate.control import decide, exponential_average
 from custom_components.room_climate.models import (
     ControlInput,
     HouseConfig,
@@ -908,35 +1335,29 @@ from custom_components.room_climate.models import (
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
 
+def room(room_id: str, **overrides: object) -> RoomConfig:
+    payload: dict[str, object] = {
+        "room_id": room_id,
+        "name": room_id.title(),
+        "valves": (f"climate.trv_{room_id}",),
+        "sources": (TemperatureSource(entity_id=f"sensor.{room_id}_temperature"),),
+    }
+    payload.update(overrides)
+    return RoomConfig(**payload)
+
+
 def house(**overrides: object) -> HouseConfig:
     payload: dict[str, object] = {
         "boiler_entity": "climate.heating_heat",
         "outdoor_sources": ("sensor.outdoor",),
-        "min_on_seconds": 300,
-        "min_off_seconds": 300,
-        "rooms": (
-            RoomConfig(
-                room_id="front_room",
-                name="Front Room",
-                actuators=("climate.trv_front_room",),
-                sources=(TemperatureSource(entity_id="sensor.front_room"),),
-            ),
-            RoomConfig(
-                room_id="back_room",
-                name="Back Room",
-                actuators=("climate.trv_back_room",),
-                sources=(TemperatureSource(entity_id="sensor.back_room"),),
-            ),
-        ),
+        "rooms": (room("front_room"), room("back_room")),
     }
     payload.update(overrides)
     return HouseConfig(**payload)
 
 
 def runtime(room_id: str, target: float | None = 21.0) -> RuntimeRoom:
-    return RuntimeRoom(
-        room_id=room_id, target_temperature=target, hvac_mode="heat", calling=False
-    )
+    return RuntimeRoom(room_id=room_id, target_temperature=target, hvac_mode="heat", calling=False)
 
 
 def payload(**overrides: object) -> ControlInput:
@@ -944,12 +1365,16 @@ def payload(**overrides: object) -> ControlInput:
         "now": NOW,
         "house": house(),
         "temperatures": {
-            "sensor.front_room": 20.0,
-            "sensor.back_room": 21.0,
+            "sensor.front_room_temperature": 20.0,
+            "sensor.back_room_temperature": 21.0,
             "sensor.outdoor": 8.0,
         },
+        "valve_demands": {},
+        "window_states": {},
         "runtimes": (runtime("front_room"), runtime("back_room")),
         "last_actuator_targets": {},
+        "last_calibration_values": {},
+        "last_command_at": {},
         "outdoor_lockout_active": False,
         "boiler_on": False,
         "boiler_state_since": None,
@@ -967,8 +1392,24 @@ def test_one_calling_room_turns_the_boiler_on() -> None:
     assert output.boiler.send is True
 
 
+def test_the_calling_room_commands_its_valve() -> None:
+    output = decide(payload())
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.calling is True
+    assert front_room.valve_targets == {"climate.trv_front_room": 21.0}
+    assert front_room.calibration_values == {"number.trv_front_room_external_measured_room_sensor": 2000}
+
+
 def test_no_calling_room_keeps_the_boiler_off() -> None:
-    output = decide(payload(temperatures={"sensor.front_room": 22.0, "sensor.back_room": 22.0, "sensor.outdoor": 8.0}))
+    output = decide(
+        payload(
+            temperatures={
+                "sensor.front_room_temperature": 22.0,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            }
+        )
+    )
     assert output.boiler.turn_on is False
     assert output.boiler.reason == "no_demand"
     assert output.boiler.send is False
@@ -977,7 +1418,11 @@ def test_no_calling_room_keeps_the_boiler_off() -> None:
 def test_the_last_room_stopping_turns_the_boiler_off() -> None:
     output = decide(
         payload(
-            temperatures={"sensor.front_room": 22.0, "sensor.back_room": 22.0, "sensor.outdoor": 8.0},
+            temperatures={
+                "sensor.front_room_temperature": 22.0,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            },
             boiler_on=True,
             boiler_state_since=NOW - timedelta(minutes=10),
         )
@@ -989,7 +1434,11 @@ def test_the_last_room_stopping_turns_the_boiler_off() -> None:
 def test_the_boiler_does_not_switch_off_inside_min_on() -> None:
     output = decide(
         payload(
-            temperatures={"sensor.front_room": 22.0, "sensor.back_room": 22.0, "sensor.outdoor": 8.0},
+            temperatures={
+                "sensor.front_room_temperature": 22.0,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            },
             boiler_on=True,
             boiler_state_since=NOW - timedelta(seconds=60),
         )
@@ -998,36 +1447,25 @@ def test_the_boiler_does_not_switch_off_inside_min_on() -> None:
 
 
 def test_the_boiler_does_not_switch_on_inside_min_off() -> None:
-    output = decide(
-        payload(boiler_on=False, boiler_state_since=NOW - timedelta(seconds=60))
-    )
+    output = decide(payload(boiler_on=False, boiler_state_since=NOW - timedelta(seconds=60)))
     assert output.boiler.send is False
 
 
-def test_a_lockout_stops_the_boiler_at_once() -> None:
+def test_a_lockout_stops_the_boiler_at_once_and_closes_the_valves() -> None:
     output = decide(
-        payload(
-            outdoor_lockout_active=True,
-            boiler_on=True,
-            boiler_state_since=NOW - timedelta(seconds=5),
-        )
+        payload(outdoor_lockout_active=True, boiler_on=True, boiler_state_since=NOW - timedelta(seconds=5))
     )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
     assert output.boiler.turn_on is False
     assert output.boiler.reason == "lockout"
     assert output.boiler.send is True
     assert output.status == "locked_out"
+    assert front_room.valve_targets == {"climate.trv_front_room": 5.0}
 
 
 def test_the_override_bypasses_the_lockout() -> None:
     output = decide(payload(outdoor_lockout_active=True, override_active=True))
     assert output.boiler.turn_on is True
-
-
-def test_a_locked_out_room_holds_its_actuator_at_the_off_setpoint() -> None:
-    output = decide(payload(outdoor_lockout_active=True))
-    front_room = next(room for room in output.rooms if room.room_id == "front_room")
-    assert front_room.calling is True
-    assert front_room.actuator_targets == {"climate.trv_front_room": 5.0}
 
 
 def test_the_master_switch_off_stops_the_boiler_at_once() -> None:
@@ -1039,93 +1477,83 @@ def test_the_master_switch_off_stops_the_boiler_at_once() -> None:
     assert output.status == "disabled"
 
 
-def test_a_missing_room_source_does_not_call_and_is_degraded() -> None:
+def test_a_window_open_closes_the_valve_without_waiting() -> None:
+    config = house(rooms=(room("front_room", window_sensors=("binary_sensor.front_room_window",)), room("back_room")))
     output = decide(
-        payload(temperatures={"sensor.front_room": None, "sensor.back_room": 22.0, "sensor.outdoor": 8.0})
+        payload(
+            house=config,
+            window_states={"binary_sensor.front_room_window": "open"},
+            last_command_at={"climate.trv_front_room": NOW - timedelta(seconds=5)},
+        )
     )
-    front_room = next(room for room in output.rooms if room.room_id == "front_room")
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.window_open is True
+    assert front_room.calling is False
+    assert front_room.valve_targets == {"climate.trv_front_room": 5.0}
+
+
+def test_a_room_without_a_source_is_degraded_and_closed() -> None:
+    output = decide(
+        payload(
+            temperatures={
+                "sensor.front_room_temperature": None,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            }
+        )
+    )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
     assert front_room.calling is False
     assert front_room.degraded is True
+    assert front_room.usable_sources == 0
+    assert front_room.calibration_values == {}
+
+
+def test_the_valve_demand_keeps_a_room_without_a_source_warm() -> None:
+    config = house(
+        rooms=(room("front_room", demand_fallback_sensors=("binary_sensor.trv_front_room_heat_required",)), room("back_room"))
+    )
+    output = decide(
+        payload(
+            house=config,
+            temperatures={
+                "sensor.front_room_temperature": None,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            },
+            valve_demands={"binary_sensor.trv_front_room_heat_required": True},
+        )
+    )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.calling is True
+    assert output.boiler.turn_on is True
+
+
+def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
+    output = decide(payload())
+    assert output.house_ema_temperature == pytest.approx(20.5)
+
+
+@pytest.mark.parametrize(
+    ("previous", "value", "elapsed", "expected"),
+    [(None, 21.0, 30.0, 21.0), (20.0, 22.0, 0.0, 22.0), (20.0, 22.0, 1800.0, 20.0 + (1 - 0.36787944117))],
+)
+def test_the_graph_average(previous: float | None, value: float, elapsed: float, expected: float) -> None:
+    result = exponential_average(previous, value, elapsed, 1800.0)
+    assert result == pytest.approx(expected, abs=1e-6)
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `uv run pytest tests/test_control_boiler.py -v`
+Run: `uv run pytest tests/test_control_decide.py -v`
 Expected: FAIL with `ImportError: cannot import name 'decide'`.
 
-- [ ] **Step 3: Add the cycle models and the decision**
-
-```python
-# appended to custom_components/room_climate/models.py
-
-
-class RuntimeRoom(BaseModel):
-    """The demand state of one room, carried between cycles."""
-
-    model_config = FROZEN
-
-    room_id: str
-    target_temperature: float | None = None
-    hvac_mode: Literal["off", "heat"] = "heat"
-    calling: bool = False
-
-
-class ControlInput(BaseModel):
-    """Everything one cycle reads."""
-
-    model_config = FROZEN
-
-    now: datetime
-    house: HouseConfig
-    temperatures: Mapping[str, float | None]
-    runtimes: tuple[RuntimeRoom, ...]
-    last_actuator_targets: Mapping[str, float]
-    outdoor_lockout_active: bool
-    boiler_on: bool
-    boiler_state_since: datetime | None
-    master_enabled: bool
-    override_active: bool
-
-
-class RoomCommand(BaseModel):
-    """The commands and the reported state of one room."""
-
-    model_config = FROZEN
-
-    room_id: str
-    calling: bool
-    room_temperature: float | None
-    usable_sources: int
-    degraded: bool
-    actuator_targets: Mapping[str, float]
-
-
-class BoilerCommand(BaseModel):
-    """The wanted boiler state of one cycle."""
-
-    model_config = FROZEN
-
-    turn_on: bool
-    reason: str
-    send: bool
-
-
-class ControlOutput(BaseModel):
-    """The result of one cycle."""
-
-    model_config = FROZEN
-
-    rooms: tuple[RoomCommand, ...]
-    boiler: BoilerCommand
-    lockout_active: bool
-    outdoor_temperature: float | None
-    status: str
-```
+- [ ] **Step 3: Write the average and the decision**
 
 ```python
 # appended to custom_components/room_climate/control.py
 
-from datetime import timedelta
+import math
 
 from .const import (
     REASON_LOCKOUT,
@@ -1134,53 +1562,85 @@ from .const import (
     REASON_ROOM_DEMAND,
     STATUS_DEGRADED,
     STATUS_DISABLED,
+    STATUS_DRY_RUN,
     STATUS_HEATING,
     STATUS_IDLE,
     STATUS_LOCKED_OUT,
 )
-from .models import (
-    BoilerCommand,
-    ControlInput,
-    ControlOutput,
-    RoomCommand,
-    RuntimeRoom,
-)
+from .models import BoilerCommand, ControlInput, ControlOutput, RoomCommand, RuntimeRoom
 
 
-def _usable_source_count(room: RoomConfig, temperatures: Mapping[str, float | None]) -> int:
-    return sum(
-        1
-        for source in room.sources
-        if (value := temperatures.get(source.entity_id)) is not None
-        and MIN_PLAUSIBLE_TEMPERATURE <= value <= MAX_PLAUSIBLE_TEMPERATURE
+def exponential_average(
+    previous: float | None, value: float, elapsed_seconds: float, tau_seconds: float
+) -> float:
+    """Return the smoothed value, and the sample itself when no history exists."""
+    if previous is None or elapsed_seconds <= 0.0 or tau_seconds <= 0.0:
+        return value
+    alpha = 1.0 - math.exp(-elapsed_seconds / tau_seconds)
+    return previous + alpha * (value - previous)
+
+
+def _is_fallback_demand(payload: ControlInput, room: RoomConfig) -> bool:
+    return any(payload.valve_demands.get(entity_id) is True for entity_id in room.demand_fallback_sensors)
+
+
+def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool) -> RoomCommand:
+    temperature = weighted_temperature(room.sources, payload.temperatures)
+    usable = usable_source_count(room.sources, payload.temperatures)
+    window_open = any(
+        payload.window_states.get(entity_id) == "open" for entity_id in room.window_sensors
+    )
+    calling = next_calling(
+        runtime.calling,
+        room,
+        runtime.target_temperature,
+        runtime.hvac_mode,
+        temperature,
+        window_open,
+        _is_fallback_demand(payload, room),
+    )
+    elapsed = (
+        (payload.now - runtime.updated_at).total_seconds() if runtime.updated_at is not None else 0.0
+    )
+    ema = (
+        exponential_average(runtime.ema_temperature, temperature, elapsed, payload.house.ema_seconds)
+        if temperature is not None
+        else runtime.ema_temperature
+    )
+    return RoomCommand(
+        room_id=room.room_id,
+        calling=calling,
+        window_open=window_open,
+        room_temperature=temperature,
+        ema_temperature=ema,
+        usable_sources=usable,
+        degraded=usable == 0,
+        valve_targets=valve_targets(
+            room,
+            blocked=blocked or window_open or runtime.hvac_mode == "off",
+            calling=calling,
+            target=runtime.target_temperature,
+            last_sent=payload.last_actuator_targets,
+            last_command_at=payload.last_command_at,
+            now=payload.now,
+        ),
+        calibration_values=calibration_values(
+            room, temperature, payload.last_calibration_values
+        ),
     )
 
 
 def decide(payload: ControlInput) -> ControlOutput:
     """Return the commands of one cycle."""
     lockout = payload.outdoor_lockout_active and not payload.override_active
+    blocked = lockout or not payload.master_enabled
     runtimes = {room.room_id: room for room in payload.runtimes}
-    commands: list[RoomCommand] = []
-    for room in payload.house.rooms:
-        runtime = runtimes.get(room.room_id, RuntimeRoom(room_id=room.room_id))
-        temperature = weighted_temperature(room.sources, payload.temperatures)
-        usable = _usable_source_count(room, payload.temperatures)
-        calling = next_calling(
-            runtime.calling, temperature, runtime.target_temperature, runtime.hvac_mode, room
+    commands = tuple(
+        _room_command(
+            payload, room, runtimes.get(room.room_id, RuntimeRoom(room_id=room.room_id)), blocked
         )
-        blocked = lockout or not payload.master_enabled
-        commands.append(
-            RoomCommand(
-                room_id=room.room_id,
-                calling=calling,
-                room_temperature=temperature,
-                usable_sources=usable,
-                degraded=usable == 0,
-                actuator_targets=actuator_targets(
-                    room, calling and not blocked, runtime.target_temperature, payload.last_actuator_targets
-                ),
-            )
-        )
+        for room in payload.house.rooms
+    )
     if not payload.master_enabled:
         boiler = _boiler_command(False, REASON_MASTER_OFF, payload, immediate=True)
     elif lockout:
@@ -1189,16 +1649,23 @@ def decide(payload: ControlInput) -> ControlOutput:
         boiler = _boiler_command(True, REASON_ROOM_DEMAND, payload)
     else:
         boiler = _boiler_command(False, REASON_NO_DEMAND, payload)
-    outdoor = outdoor_temperature(
-        payload.house.outdoor_sources, payload.temperatures
-    )
     return ControlOutput(
-        rooms=tuple(commands),
+        rooms=commands,
         boiler=boiler,
         lockout_active=payload.outdoor_lockout_active,
-        outdoor_temperature=outdoor,
+        outdoor_temperature=outdoor_temperature(payload.house.outdoor_sources, payload.temperatures),
+        house_ema_temperature=_house_average(commands),
         status=_status(payload, lockout, boiler, commands),
     )
+
+
+def _house_average(commands: Sequence[RoomCommand]) -> float | None:
+    values = [
+        command.ema_temperature for command in commands if command.ema_temperature is not None
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
 
 
 def _boiler_command(
@@ -1206,21 +1673,18 @@ def _boiler_command(
 ) -> BoilerCommand:
     if turn_on == payload.boiler_on:
         return BoilerCommand(turn_on=turn_on, reason=reason, send=False)
-    if payload.boiler_state_since is None:
+    if immediate or payload.boiler_state_since is None:
         return BoilerCommand(turn_on=turn_on, reason=reason, send=True)
-    if immediate:
-        return BoilerCommand(turn_on=turn_on, reason=reason, send=True)
-    limit = (
-        timedelta(seconds=payload.house.min_off_seconds)
-        if turn_on
-        else timedelta(seconds=payload.house.min_on_seconds)
+    limit = timedelta(
+        seconds=payload.house.min_off_seconds if turn_on else payload.house.min_on_seconds
     )
-    elapsed = payload.now - payload.boiler_state_since
-    return BoilerCommand(turn_on=turn_on, reason=reason, send=elapsed >= limit)
+    return BoilerCommand(
+        turn_on=turn_on, reason=reason, send=payload.now - payload.boiler_state_since >= limit
+    )
 
 
 def _status(
-    payload: ControlInput, lockout: bool, boiler: BoilerCommand, rooms: list[RoomCommand]
+    payload: ControlInput, lockout: bool, boiler: BoilerCommand, commands: Sequence[RoomCommand]
 ) -> str:
     if not payload.master_enabled:
         return STATUS_DISABLED
@@ -1228,7 +1692,7 @@ def _status(
         return STATUS_LOCKED_OUT
     if payload.house.dry_run:
         return STATUS_DRY_RUN
-    if all(room.degraded for room in rooms) and rooms:
+    if commands and all(command.degraded for command in commands):
         return STATUS_DEGRADED
     if boiler.turn_on or payload.boiler_on:
         return STATUS_HEATING
@@ -1237,30 +1701,32 @@ def _status(
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `uv run pytest tests/test_control_boiler.py -v`
-Expected: PASS, eleven tests.
+Run: `uv run pytest tests/test_control_decide.py -v`
+Expected: PASS, sixteen tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add custom_components/room_climate/control.py custom_components/room_climate/models.py \
-  tests/test_control_boiler.py
-git commit -m "add the boiler decision"
+git add custom_components/room_climate/control.py tests/test_control_decide.py
+git commit -m "add the cycle decision"
 ```
 
 ---
 
-### Task 7: The coordinator
+### Task 9: The coordinator
 
 **Files:**
 - Create: `custom_components/room_climate/coordinator.py`
+- Modify: `custom_components/room_climate/__init__.py`
 - Test: `tests/test_coordinator.py`
 
 **Interfaces:**
 - Consumes: `decide`, `HouseConfig.from_options`, `ControlOutput`.
 - Produces: `RoomClimateCoordinator(hass, entry, config)` with the attributes `config`,
-  `output`, `runtimes` and the method `async_recompute()`. The `data` attribute is a
-  `ControlOutput`.
+  `output`, `runtimes`, `last_actuator_targets`, `last_calibration_values`,
+  `last_command_at`, `master_enabled`, `override_active`, and the methods
+  `async_start()`, `async_stop()`, `async_recompute()`, `async_release_boiler()`. The `data`
+  attribute is a `ControlOutput`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1272,68 +1738,111 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
 
 
-async def setup_entry(hass: HomeAssistant, **options: object) -> MockConfigEntry:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Room Climate",
-        options={
-            "boiler_entity": "climate.heating_heat",
-            "outdoor_sources": ["sensor.outdoor"],
-            "rooms": [
-                {
-                    "room_id": "front_room",
-                    "name": "Front Room",
-                    "actuators": ["climate.trv_front_room"],
-                    "sources": [{"entity_id": "sensor.front_room"}],
-                }
-            ],
-            **options,
-        },
-    )
+def options(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "boiler_entity": "climate.heating_heat",
+        "outdoor_sources": ["sensor.outdoor"],
+        "rooms": [
+            {
+                "room_id": "front_room",
+                "name": "Front Room",
+                "valves": ["climate.trv_front_room"],
+                "sources": [{"entity_id": "sensor.front_room_temperature"}],
+            }
+        ],
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def setup_entry(hass: HomeAssistant, **overrides: object) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, title="Room Climate", options=options(**overrides))
     entry.add_to_hass(hass)
-    return entry
-
-
-async def test_a_call_for_heat_sets_the_actuator_and_the_boiler(hass: HomeAssistant) -> None:
-    entry = await setup_entry(hass)
-    hass.states.async_set("sensor.front_room", "20.0")
+    hass.states.async_set("sensor.front_room_temperature", "20.0")
     hass.states.async_set("sensor.outdoor", "8.0")
     hass.states.async_set("climate.trv_front_room", "heat", {"temperature": 5.0})
+    hass.states.async_set("number.trv_front_room_external_measured_room_sensor", "-8000")
     hass.states.async_set("climate.heating_heat", "off", {"temperature": 15.0})
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
+    return entry
+
+
+def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict]:
+    return [
+        dict(call.data)
+        for call in hass.services.async_calls("climate", service)
+        if call.data.get("entity_id") == entity_id
+    ]
+
+
+async def test_a_call_for_heat_commands_the_valve_and_the_boiler(hass: HomeAssistant) -> None:
+    entry = await setup_entry(hass, dry_run=False)
     await hass.services.async_call(
         "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
     )
     await hass.async_block_till_done()
 
-    calls = [
-        call
-        for call in hass.services.async_calls("climate", "set_temperature")
-        if call.data.get("temperature") in (31.0, 15.0)
-    ]
-    assert calls, "the boiler must be commanded"
-    assert calls[-1].data["entity_id"] == "climate.heating_heat"
+    boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
+    assert boiler, "the boiler must be commanded"
+    assert boiler[-1]["temperature"] == 31.0
+    assert boiler[-1]["hvac_mode"] == "heat"
+
+    valve = calls_for(hass, "set_temperature", "climate.trv_front_room")
+    assert [call["temperature"] for call in valve][-1] == 21.0
 
 
-async def test_dry_run_sends_nothing(hass: HomeAssistant) -> None:
-    entry = await setup_entry(hass, dry_run=True)
-    hass.states.async_set("sensor.front_room", "20.0")
-    hass.states.async_set("sensor.outdoor", "8.0")
-    hass.states.async_set("climate.trv_front_room", "heat", {"temperature": 5.0})
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+async def test_the_calibration_feed_is_written(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=False)
+    writes = hass.services.async_calls("number", "set_value")
+    assert any(call.data.get("value") == 2000 for call in writes)
+
+
+async def test_dry_run_sends_no_command(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=True)
     with patch("homeassistant.core.ServiceRegistry.async_call", new=AsyncMock()) as call:
         await hass.services.async_call("room_climate", "recompute", {})
         await hass.async_block_till_done()
     assert not [item for item in call.await_args_list if item.args[:1] == ("climate",)]
+    assert not [item for item in call.await_args_list if item.args[:1] == ("number",)]
+
+
+async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Room Climate",
+        options=options(
+            dry_run=False,
+            rooms=[
+                {
+                    "room_id": "side_room",
+                    "name": "Side Room",
+                    "valves": ["climate.trv_side_room_a", "climate.trv_side_room_b"],
+                    "sources": [{"entity_id": "sensor.side_room_temperature"}],
+                }
+            ],
+        ),
+    )
+    entry.add_to_hass(hass)
+    hass.states.async_set("sensor.side_room_temperature", "19.0")
+    hass.states.async_set("sensor.outdoor", "8.0")
+    hass.states.async_set("climate.trv_side_room_a", "unavailable")
+    hass.states.async_set("climate.trv_side_room_b", "heat", {"temperature": 5.0})
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_side_room", "temperature": 21.0},
+    )
+    await hass.async_block_till_done()
+    assert calls_for(hass, "set_temperature", "climate.trv_side_room_b")
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1357,11 +1866,23 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
-from .control import decide, outdoor_temperature
+from .control import decide, feed_entity_id, next_lockout, outdoor_temperature
 from .models import ControlInput, ControlOutput, HouseConfig, RuntimeRoom
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _numeric_state(hass: HomeAssistant, entity_id: str) -> float | None:
+    state = hass.states.get(entity_id)
+    if state is None or state.state in ("unknown", "unavailable", ""):
+        return None
+    if state.domain == "weather":
+        temperature = state.attributes.get("temperature")
+        return float(temperature) if temperature is not None else None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
 
 
 class RoomClimateCoordinator:
@@ -1377,19 +1898,28 @@ class RoomClimateCoordinator:
         self.boiler_state_since: datetime | None = None
         self.lockout_active = False
         self.last_actuator_targets: dict[str, float] = {}
+        self.last_calibration_values: dict[str, float] = {}
+        self.last_command_at: dict[str, datetime] = {}
         self.master_enabled = config.master_enabled
         self.override_active = False
+        self.available = True
         self._listeners: list[object] = []
 
     @property
     def watched_entities(self) -> tuple[str, ...]:
         """The entities whose state changes trigger a cycle."""
-        room_entities = [
+        watched = [
             entity_id
             for room in self.config.rooms
-            for entity_id in (*room.actuators, *(source.entity_id for source in room.sources))
+            for entity_id in (
+                *room.valves,
+                *(feed_entity_id(valve) for valve in room.valves),
+                *(source.entity_id for source in room.sources),
+                *room.window_sensors,
+                *room.demand_fallback_sensors,
+            )
         ]
-        return tuple((*room_entities, self.config.boiler_entity, *self.config.outdoor_sources))
+        return tuple((*watched, self.config.boiler_entity, *self.config.outdoor_sources))
 
     async def async_start(self) -> None:
         """Run one cycle, then follow the watched entities."""
@@ -1402,8 +1932,8 @@ class RoomClimateCoordinator:
 
     async def async_stop(self) -> None:
         """Detach the listeners."""
-        for unsub in self._listeners:
-            unsub()  # type: ignore[operator]
+        for unsubscribe in self._listeners:
+            unsubscribe()  # type: ignore[operator]
         self._listeners.clear()
 
     @callback
@@ -1412,12 +1942,24 @@ class RoomClimateCoordinator:
 
     async def async_recompute(self) -> ControlOutput:
         """Run one cycle and apply the commands."""
-        now = dt_util.utcnow()
         temperatures = {
             entity_id: _numeric_state(self.hass, entity_id)
-            for entity_id in (*self.config.outdoor_sources, *(
-                source.entity_id for room in self.config.rooms for source in room.sources
-            ))
+            for entity_id in (
+                *self.config.outdoor_sources,
+                *(source.entity_id for room in self.config.rooms for source in room.sources),
+            )
+        }
+        window_states = {
+            entity_id: state.state
+            for entity_id in (item for room in self.config.rooms for item in room.window_sensors)
+            if (state := self.hass.states.get(entity_id)) is not None
+        }
+        valve_demands = {
+            entity_id: state.state == "on"
+            for entity_id in (
+                item for room in self.config.rooms for item in room.demand_fallback_sensors
+            )
+            if (state := self.hass.states.get(entity_id)) is not None
         }
         outdoor = outdoor_temperature(self.config.outdoor_sources, temperatures)
         self.lockout_active = next_lockout(
@@ -1427,11 +1969,15 @@ class RoomClimateCoordinator:
             self.config.lockout_hysteresis,
         )
         payload = ControlInput(
-            now=now,
+            now=dt_util.utcnow(),
             house=self.config,
             temperatures=temperatures,
+            valve_demands=valve_demands,
+            window_states=window_states,
             runtimes=tuple(self.runtimes.values()),
             last_actuator_targets=self.last_actuator_targets,
+            last_calibration_values=self.last_calibration_values,
+            last_command_at=self.last_command_at,
             outdoor_lockout_active=self.lockout_active,
             boiler_on=self.boiler_on,
             boiler_state_since=self.boiler_state_since,
@@ -1441,30 +1987,102 @@ class RoomClimateCoordinator:
         output = await self.hass.async_add_executor_job(decide, payload)
         if self.config.dry_run:
             _LOGGER.info("dry run %s: %s", self.entry.entry_id, output.model_dump_json())
+            self._remember(output)
         else:
             await self._apply(output)
-        self._remember(output)
         self.output = output
         self.entry.async_update_listeners()
         return output
+
+    async def _apply(self, output: ControlOutput) -> None:
+        """Send the commands of one cycle."""
+        now = dt_util.utcnow()
+        for command in output.rooms:
+            for entity_id, value in command.valve_targets.items():
+                if self.hass.states.get(entity_id) is None:
+                    continue
+                await self.hass.services.async_call(
+                    "climate",
+                    "set_temperature",
+                    {"entity_id": entity_id, "temperature": value},
+                    blocking=False,
+                )
+                self.last_actuator_targets[entity_id] = value
+                self.last_command_at[entity_id] = now
+            for entity_id, value in command.calibration_values.items():
+                if self.hass.states.get(entity_id) is None:
+                    continue
+                await self.hass.services.async_call(
+                    "number", "set_value", {"entity_id": entity_id, "value": value}, blocking=False
+                )
+                self.last_calibration_values[entity_id] = value
+        if output.boiler.send:
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {
+                    "entity_id": self.config.boiler_entity,
+                    "temperature": (
+                        self.config.boiler_on_temperature
+                        if output.boiler.turn_on
+                        else self.config.boiler_off_temperature
+                    ),
+                    "hvac_mode": (
+                        self.config.boiler_on_hvac_mode
+                        if output.boiler.turn_on
+                        else self.config.boiler_off_hvac_mode
+                    ),
+                },
+                blocking=False,
+            )
+            self.boiler_on = output.boiler.turn_on
+            self.boiler_state_since = now
+        self._remember(output)
+
+    def _remember(self, output: ControlOutput) -> None:
+        """Keep the latch, the averages and the sent values for the next cycle."""
+        now = dt_util.utcnow()
+        self.runtimes = {
+            command.room_id: RuntimeRoom(
+                room_id=command.room_id,
+                target_temperature=self.runtimes.get(
+                    command.room_id, RuntimeRoom(room_id=command.room_id)
+                ).target_temperature,
+                hvac_mode=self.runtimes.get(
+                    command.room_id, RuntimeRoom(room_id=command.room_id)
+                ).hvac_mode,
+                calling=command.calling,
+                ema_temperature=command.ema_temperature,
+                updated_at=now,
+            )
+            for command in output.rooms
+        }
+
+    async def async_release_boiler(self) -> None:
+        """Return the boiler to its idle values."""
+        await self.hass.services.async_call(
+            "climate",
+            "set_temperature",
+            {
+                "entity_id": self.config.boiler_entity,
+                "temperature": self.config.boiler_off_temperature,
+                "hvac_mode": self.config.boiler_off_hvac_mode,
+            },
+            blocking=False,
+        )
+        self.boiler_on = False
+        self.boiler_state_since = dt_util.utcnow()
 ```
 
-The remaining methods of the coordinator, and the entry setup, follow the spec's section 6.4
-and 6.6:
-
-- `_apply(output)`: for each `RoomCommand`, call `climate.set_temperature` with
-  `{"entity_id": entity_id, "temperature": value}` for each target; then, when
-  `output.boiler.send` is true, call `climate.set_temperature` with
-  `{"entity_id": config.boiler_entity, "temperature": on or off value, "hvac_mode": mode}`.
-- `_remember(output)`: set `last_actuator_targets` from the sent targets, `boiler_on`,
-  `boiler_state_since`, and the `runtimes` dictionary from `output.rooms`.
-- `async_release_boiler(config)`: set the boiler to the OFF values. It runs from
-  `async_unload_entry` and from `async_remove_entry`.
+`__init__.py` sets the entry up: it builds `HouseConfig.from_options(entry.options)`, creates
+the coordinator, forwards the platforms `climate`, `switch`, `binary_sensor` and `sensor`,
+starts the coordinator, and registers the `room_climate.recompute` service. `async_unload_entry`
+stops the coordinator, releases the boiler and unloads the platforms.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_coordinator.py -v`
-Expected: PASS, two tests.
+Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1476,7 +2094,7 @@ git commit -m "add the room climate coordinator"
 
 ---
 
-### Task 8: The platforms
+### Task 10: The platforms
 
 **Files:**
 - Create: `custom_components/room_climate/climate.py`, `switch.py`, `binary_sensor.py`, `sensor.py`
@@ -1487,7 +2105,8 @@ git commit -m "add the room climate coordinator"
 - Produces: `climate.room_climate_<room>`, `switch.room_climate_boiler_automation`,
   `switch.room_climate_lockout_override`, `binary_sensor.room_climate_boiler_demand`,
   `binary_sensor.room_climate_outdoor_lockout`, `sensor.room_climate_outdoor_temperature`,
-  `sensor.room_climate_status`, `sensor.room_climate_<room>_temperature`,
+  `sensor.room_climate_house_temperature`, `sensor.room_climate_status`,
+  `sensor.room_climate_<room>_temperature`, `sensor.room_climate_<room>_temperature_ema`,
   `binary_sensor.room_climate_<room>_calling`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1503,36 +2122,61 @@ from homeassistant.core import HomeAssistant
 from .test_coordinator import setup_entry
 
 
-async def test_the_virtual_thermostat_reports_the_weighted_temperature(
-    hass: HomeAssistant,
-) -> None:
-    entry = await setup_entry(hass, dry_run=True)
-    hass.states.async_set("sensor.front_room", "20.4")
-    hass.states.async_set("sensor.outdoor", "8.0")
-    hass.states.async_set("climate.trv_front_room", "heat", {"temperature": 5.0})
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
+async def test_the_virtual_thermostat_reports_the_weighted_temperature(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=True)
     state = hass.states.get("climate.room_climate_front_room")
     assert state is not None
-    assert state.attributes["current_temperature"] == 20.4
-    assert state.attributes["hvac_action"] == "heating"
+    assert state.attributes["current_temperature"] == 20.0
+    assert state.attributes["hvac_action"] == "idle"
     assert state.attributes["hvac_modes"] == ["off", "heat"]
+    assert state.attributes["valves"] == ["climate.trv_front_room"]
+
+
+async def test_the_scheduler_sets_the_setpoint_and_the_room_calls(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=True)
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+    )
+    await hass.async_block_till_done()
+    state = hass.states.get("climate.room_climate_front_room")
+    assert state.attributes["temperature"] == 21.0
+    assert state.attributes["hvac_action"] == "heating"
 
 
 async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
-    entry = await setup_entry(hass, dry_run=True)
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await setup_entry(hass, dry_run=True)
     for entity_id in (
         "switch.room_climate_boiler_automation",
         "switch.room_climate_lockout_override",
         "binary_sensor.room_climate_boiler_demand",
         "binary_sensor.room_climate_outdoor_lockout",
         "sensor.room_climate_outdoor_temperature",
+        "sensor.room_climate_house_temperature",
         "sensor.room_climate_status",
+        "sensor.room_climate_front_room_temperature",
+        "sensor.room_climate_front_room_temperature_ema",
+        "binary_sensor.room_climate_front_room_calling",
     ):
         assert hass.states.get(entity_id) is not None, entity_id
+
+
+async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=False)
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+    )
+    await hass.async_block_till_done()
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": "switch.room_climate_boiler_automation"}
+    )
+    await hass.async_block_till_done()
+    boiler = [
+        dict(call.data)
+        for call in hass.services.async_calls("climate", "set_temperature")
+        if call.data.get("entity_id") == "climate.heating_heat"
+    ]
+    assert boiler[-1]["temperature"] == 15.0
+    assert boiler[-1]["hvac_mode"] == "off"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1542,21 +2186,26 @@ Expected: FAIL, because no climate entity exists.
 
 - [ ] **Step 3: Write the platforms**
 
-Each platform subclasses `CoordinatorEntity` and reads `coordinator.output`. The climate
-entity:
-
 ```python
 # custom_components/room_climate/climate.py
 """One virtual thermostat per room."""
 
 from __future__ import annotations
 
-from homeassistant.components.climate import ClimateEntity, ClimateEntityFeature, HVACAction, HVACMode
-from homeassistant.components.climate.const import ATTR_TARGET_TEMP_STEP
+from homeassistant.components.climate import (
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACAction,
+    HVACMode,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
-from .models import RoomConfig
+from .models import RoomConfig, RuntimeRoom
+from .coordinator import RoomClimateCoordinator
 
 
 class RoomClimateEntity(ClimateEntity, RestoreEntity):
@@ -1567,15 +2216,23 @@ class RoomClimateEntity(ClimateEntity, RestoreEntity):
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
     _attr_target_temperature_step = 0.5
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+    _attr_should_poll = False
 
-    def __init__(self, coordinator, room: RoomConfig) -> None:
+    def __init__(self, coordinator: RoomClimateCoordinator, room: RoomConfig) -> None:
         self.coordinator = coordinator
         self.room = room
         self._attr_unique_id = f"{DOMAIN}_{room.room_id}_climate"
         self._attr_min_temp = room.min_temp
         self._attr_max_temp = room.max_temp
         self._attr_hvac_mode = HVACMode.HEAT
-        self._attr_target_temperature = None
+        self._attr_target_temperature: float | None = None
+
+    @property
+    def _command(self):  # type: ignore[no-untyped-def]
+        output = self.coordinator.output
+        if output is None:
+            return None
+        return next((command for command in output.rooms if command.room_id == self.room.room_id), None)
 
     @property
     def current_temperature(self) -> float | None:
@@ -1584,21 +2241,43 @@ class RoomClimateEntity(ClimateEntity, RestoreEntity):
 
     @property
     def hvac_action(self) -> HVACAction:
-        command = self._command
         if self.hvac_mode == HVACMode.OFF:
             return HVACAction.OFF
+        command = self._command
         return HVACAction.HEATING if command is not None and command.calling else HVACAction.IDLE
 
-    async def async_set_temperature(self, **kwargs) -> None:
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        command = self._command
+        return {
+            "valves": list(self.room.valves),
+            "valve_targets": dict(command.valve_targets) if command else {},
+            "calibration": self.room.calibration if command else None,
+            "calibration_scale": self.room.calibration_scale,
+            "usable_sources": command.usable_sources if command else 0,
+            "degraded": command.degraded if command else True,
+            "window_open": command.window_open if command else False,
+        }
+
+    def _remember(self) -> None:
+        runtime = self.coordinator.runtimes.get(self.room.room_id, RuntimeRoom(room_id=self.room.room_id))
+        self.coordinator.runtimes[self.room.room_id] = runtime.model_copy(
+            update={
+                "target_temperature": self._attr_target_temperature,
+                "hvac_mode": str(self._attr_hvac_mode),
+            }
+        )
+
+    async def async_set_temperature(self, **kwargs: object) -> None:
         temperature = kwargs.get("temperature")
-        if temperature is not None:
-            self._attr_target_temperature = temperature
-        self._push_runtime()
+        if isinstance(temperature, (int, float)):
+            self._attr_target_temperature = float(temperature)
+        self._remember()
         await self.coordinator.async_recompute()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         self._attr_hvac_mode = hvac_mode
-        self._push_runtime()
+        self._remember()
         await self.coordinator.async_recompute()
 
     async def async_added_to_hass(self) -> None:
@@ -1607,17 +2286,20 @@ class RoomClimateEntity(ClimateEntity, RestoreEntity):
         if last is not None:
             self._attr_target_temperature = last.attributes.get("temperature")
             self._attr_hvac_mode = HVACMode(last.state)
+        self._remember()
 ```
 
-`_push_runtime()` writes `RuntimeRoom(room_id=..., target_temperature=..., hvac_mode=...)`
-into `coordinator.runtimes`. The switch, binary_sensor and sensor platforms publish
-`coordinator.output` and the two switches write `coordinator.master_enabled` and
-`coordinator.override_active` and then request a cycle.
+`switch.py` publishes the two switches and writes `coordinator.master_enabled` and
+`coordinator.override_active`, then requests a cycle. `binary_sensor.py` and `sensor.py`
+publish the values of `coordinator.output`: the calling latch, the room temperature, the room
+EMA (`command.ema_temperature`), the house EMA, the outdoor temperature, the boiler demand,
+the lockout and the status. `sensor.room_climate_status` uses `SensorDeviceClass.ENUM` with
+the six values.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_platforms.py -v`
-Expected: PASS, two tests.
+Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1630,11 +2312,11 @@ git commit -m "add the room climate platforms"
 
 ---
 
-### Task 9: The config flow
+### Task 11: The config flow
 
 **Files:**
-- Create: `custom_components/room_climate/config_flow.py`, `custom_components/room_climate/strings.json`,
-  `custom_components/room_climate/translations/en.json`
+- Create: `custom_components/room_climate/config_flow.py`, `strings.json`
+- Modify: `custom_components/room_climate/translations/en.json`
 - Test: `tests/test_config_flow.py`
 
 **Interfaces:**
@@ -1658,9 +2340,7 @@ from custom_components.room_climate.const import DOMAIN
 
 
 async def test_user_flow_creates_the_entry(hass: HomeAssistant) -> None:
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"],
@@ -1673,18 +2353,31 @@ async def test_user_flow_creates_the_entry(hass: HomeAssistant) -> None:
         },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["dry_run"] is True
 
 
-async def test_options_flow_rejects_a_shared_actuator(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]},
+async def test_a_room_needs_a_valve_and_a_source(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "add_room"}
     )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"room_id": "front_room", "name": "Front Room", "valves": [], "sources": [{"entity_id": "sensor.front_room"}]},
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"]
+
+
+async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]})
     entry.add_to_hass(hass)
     room = {
         "room_id": "front_room",
         "name": "Front Room",
-        "actuators": ["climate.trv_front_room"],
+        "valves": ["climate.trv_front_room"],
         "sources": [{"entity_id": "sensor.front_room"}],
     }
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -1704,7 +2397,7 @@ async def test_options_flow_rejects_a_shared_actuator(hass: HomeAssistant) -> No
         {**room, "room_id": "back_room", "name": "Back Room", "sources": [{"entity_id": "sensor.back_room"}]},
     )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"]["base"] == "shared_actuator"
+    assert result["errors"]["base"] == "shared_entity"
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1714,17 +2407,21 @@ Expected: FAIL, because the domain has no flow handler.
 
 - [ ] **Step 3: Write the flows**
 
-The user step collects the house fields with `vol.Schema` selectors
-(`EntitySelector` with `domain="climate"` for the boiler, `EntitySelector` with
-`device_class="temperature"` for the outdoor sources). The options flow uses
-`OptionsFlowWithConfigEntry`, a `menu` step, and one form per room. The room form
-rejects a duplicate actuator and a duplicate source with the errors `shared_actuator`
-and `shared_source`, and the message names both rooms.
+The user step collects the house fields with `vol.Schema` selectors: `EntitySelector` with
+`domain="climate"` for the boiler, `EntitySelector` with `device_class="temperature"` for the
+outdoor sources, `NumberSelector` for the thresholds, and `BooleanSelector` for `dry_run`. The
+options flow uses `OptionsFlowWithConfigEntry`, a `menu` step, and one form per room. The room
+form collects `valves` and `sources` with `EntitySelector(multiple=True)`, `calibration`,
+`calibration_scale`, `valve_mode`, `open_offset`, the temperature limits, `hysteresis`,
+`off_setpoint`, `valve_command_interval_seconds`, `window_sensors` and
+`demand_fallback_sensors`. It validates the room with `HouseConfig.model_validate` over the
+room list plus the new room, and it maps `ValidationError` to the errors `shared_entity` and
+`invalid_room`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_config_flow.py -v`
-Expected: PASS, two tests.
+Expected: PASS, three tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1736,11 +2433,11 @@ git commit -m "add the room climate config flow"
 
 ---
 
-### Task 10: Unload safety, diagnostics and the recompute service
+### Task 12: Unload safety, diagnostics and the recompute service
 
 **Files:**
 - Modify: `custom_components/room_climate/__init__.py`, `custom_components/room_climate/coordinator.py`
-- Create: `custom_components/room_climate/diagnostics.py`, `custom_components/room_climate/services.yaml`
+- Create: `custom_components/room_climate/diagnostics.py`, `services.yaml`
 - Test: `tests/test_unload.py`
 
 **Interfaces:**
@@ -1763,23 +2460,29 @@ from .test_coordinator import setup_entry
 
 async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
     entry = await setup_entry(hass, dry_run=False)
-    hass.states.async_set("sensor.front_room", "20.0")
-    hass.states.async_set("sensor.outdoor", "8.0")
-    hass.states.async_set("climate.trv_front_room", "heat", {"temperature": 5.0})
-    hass.states.async_set("climate.heating_heat", "heat", {"temperature": 31.0})
-    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.services.async_call(
+        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+    )
     await hass.async_block_till_done()
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
-    calls = [
-        call
+    boiler = [
+        dict(call.data)
         for call in hass.services.async_calls("climate", "set_temperature")
         if call.data.get("entity_id") == "climate.heating_heat"
     ]
-    assert calls[-1].data["temperature"] == 15.0
-    assert calls[-1].data["hvac_mode"] == "off"
+    assert boiler[-1]["temperature"] == 15.0
+    assert boiler[-1]["hvac_mode"] == "off"
+
+
+async def test_recompute_runs_one_cycle(hass: HomeAssistant) -> None:
+    entry = await setup_entry(hass, dry_run=True)
+    entry.runtime_data.output = None
+    await hass.services.async_call("room_climate", "recompute", {})
+    await hass.async_block_till_done()
+    assert entry.runtime_data.output is not None
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1789,16 +2492,17 @@ Expected: FAIL, because unload sends no boiler command.
 
 - [ ] **Step 3: Write the release path, the service and the diagnostics**
 
-`async_unload_entry` stops the coordinator, then calls
-`coordinator.async_release_boiler()`. `async_remove_entry` calls the same release.
-`async_setup` registers the service `room_climate.recompute` for every loaded entry,
-and it runs one cycle. `diagnostics.py` returns the config, the last `ControlOutput`
-and the watched entities.
+`async_unload_entry` stops the coordinator, calls `coordinator.async_release_boiler()`, then
+unloads the four platforms and removes the service when the last entry goes away.
+`async_remove_entry` releases the boiler as well. `async_setup` registers
+`room_climate.recompute` with no fields and one handler per loaded entry.
+`diagnostics.py` returns the config model dump, the last `ControlOutput`, the watched entities
+and the timestamps of the boiler transitions.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_unload.py -v`
-Expected: PASS, one test.
+Expected: PASS, two tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1811,7 +2515,7 @@ git commit -m "release the boiler on unload"
 
 ---
 
-### Task 11: Packaging, the dashboard example and the live runbook
+### Task 13: Packaging, the dashboard example and the migration runbook
 
 **Files:**
 - Modify: `README.md`, `hacs.json`
@@ -1820,40 +2524,50 @@ git commit -m "release the boiler on unload"
 
 **Interfaces:**
 - Consumes: the whole component.
-- Produces: the install route, the dashboard example, and the live evidence.
+- Produces: the install route, the dashboard example, the migration record and the live
+  evidence.
 
 - [ ] **Step 1: Write the failing check**
 
-Run: `uv run python -c "import json,pathlib; print(json.loads(pathlib.Path('hacs.json').read_text()))"`
-Expected: FAIL, because `hacs.json` has no `name` field that matches the manifest domain.
+Run: `uv run python -c "import json,pathlib; json.loads(pathlib.Path('hacs.json').read_text())['name']"`
+Expected: FAIL with `KeyError: 'name'`, because `hacs.json` has no `name` field yet.
 
 - [ ] **Step 2: Write the packaging**
 
 1. Set `hacs.json` to
    `{"name": "Room Climate", "render_readme": true, "homeassistant": "2026.10.0"}`.
-2. Write `README.md` with the install route of the spec's section 8.
-3. Write `dashboard/room-climate.yaml` with one thermostat card per room, the house panel
-   and one history graph.
-4. Write `docs/room-heating.runbook.md` with the numbered install procedure, the
-   `dry_run` review step, and the rollback step.
-5. Write `scripts/probe_live.py`. It reads the token from `~/.hermes/ha_token`, then prints
-   the room climate entities, the boiler entity state, and the status sensor.
+2. Write `README.md` with the install route, the room table of the spec's section 3.3, and
+   the eight dashboard cards that change.
+3. Write `dashboard/room-climate.yaml` with one thermostat card per room, the house panel and
+   one history graph per room.
+4. Write `docs/room-heating.runbook.md` with the fourteen steps of the spec's section 8, the
+   rollback steps, and the feed-scale confirmation of steps 6 and 7 as its own section.
+5. Write `scripts/probe_live.py`. It reads the token from `~/.hermes/ha_token`, prints the
+   room climate entities with their attributes, the boiler state, the status sensor, and the
+   current value of every feed entity.
 
 - [ ] **Step 3: Run the live regression**
 
 1. Push the repository. Tag `v0.1.0` and push the tag.
-2. Add the repository to HACS as a custom repository of category Integration, then
-   download it. Restart Home Assistant.
-3. Add the integration and configure each room with the table of the spec's section 3.2.
-4. Keep `dry_run` on. Watch the log and `sensor.room_climate_status` for one hour.
-5. Run `uv run python scripts/probe_live.py` and record the output in
-   `docs/plans/2026-10-19-room-heating.evidence.md`.
-6. Turn `dry_run` off. Disable `automation.heat_on_demand`.
-7. Set one room target above its temperature. Confirm that the boiler reaches 31 °C and
-   that the room's TRVs open.
-8. Lower the lockout threshold below the outdoor temperature. Confirm that the boiler
-   returns to 15 °C and mode `off` within one cycle.
-9. Restore the lockout threshold to 18 °C.
+2. Add the repository to HACS as a custom repository of category Integration, then download
+   it. Restart Home Assistant.
+3. Add the integration, and configure each room with the table of the spec's section 3.3.
+4. Confirm the feed scale on one valve: write 2150 into its feed entity, read the value back,
+   and watch the valve demand for one hour.
+5. Keep `dry_run` on for one day. Watch the log and `sensor.room_climate_status`.
+6. Turn `dry_run` off.
+7. Disable `automation.heat_on_demand`.
+8. Set one room target above its temperature. Confirm that the boiler reaches 31 °C, that the
+   valve of the room reaches its target, and that `sensor.room_climate_<room>_temperature_ema`
+   moves.
+9. Lower the lockout threshold below the outdoor temperature. Confirm that the boiler returns
+   to 15 °C with mode `off` within one cycle, and that the valves return to 5 °C.
+10. Restore the lockout threshold to 18 °C.
+11. Repoint the eight dashboard cards to `climate.room_climate_*`.
+12. Remove the eight Better Thermostat entries.
+13. Remove Better Thermostat from HACS.
+14. Record every measurement in `docs/plans/2026-10-19-room-heating.evidence.md`, including
+    the feed scale, the valve targets, the boiler transitions and the cycle timings.
 
 - [ ] **Step 4: Run the checks to verify they pass**
 
@@ -1864,25 +2578,26 @@ Expected: PASS.
 
 ```bash
 git add README.md hacs.json dashboard docs scripts
-git commit -m "package room climate for HACS"
+git commit -m "package room climate for HACS and record the migration"
 ```
 
 ---
 
 ## Self-review
 
-**Spec coverage:** section 5 (architecture) → tasks 1, 7, 8. Section 5.2 (configuration) →
-tasks 2, 9. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 5. Section 6.4 →
-task 6. Section 6.5 → task 4. Section 6.6 → tasks 7, 10. Section 7 → task 8. Section 8 →
-task 11. Section 9 → every task.
+**Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
+tasks 2, 11. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
+task 7. Section 6.5 → task 8. Section 6.6 → task 4. Section 6.7 → tasks 9, 12. Section 7 →
+tasks 8, 10. Section 8 → task 13. Section 9 → every task.
 
-**Review focus coverage:** item 1 → task 4. Item 2 → tasks 5, 6. Item 3 → task 7. Item 4 →
-tasks 5, 6. Item 5 → task 6.
+**Review focus coverage:** item 1 → task 4. Item 2 → tasks 5, 8. Item 3 → task 9. Item 4 →
+tasks 6, 8. Item 5 → tasks 8, 12. Item 6 → tasks 7, 9.
 
-**Type consistency:** `RuntimeRoom` is the name in both `models.py` and the coordinator.
-`ControlOutput.rooms` holds `RoomCommand` values. `actuator_targets` returns
-`Mapping[str, float]` in the model and in the function signature. The service name is
-`room_climate.recompute` in the constants, the service file and the tests.
+**Type consistency:** `RuntimeRoom` is the name in `models.py`, the coordinator and the
+climate entity. `valve_targets` returns `Mapping[str, float]` in the model and in the
+function. `calibration_values` returns raw feed units in both. `feed_entity_id` is the one
+place that derives the feed entity. The service name is `room_climate.recompute` in the
+constants, the service file and the tests.
 
-**Open decisions:** the four rows of the spec's section 10 stay open. Task 9 reads the
+**Open decisions:** the five rows of the spec's section 10 stay open. Task 11 reads the
 defaults from the spec. A change to a default is a change to the spec first.
