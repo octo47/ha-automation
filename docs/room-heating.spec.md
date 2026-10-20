@@ -520,7 +520,9 @@ valves.
 1. Open HACS, then Integrations.
 2. Add `octo47/ha-automation` as a custom repository of category Integration.
 3. Download Room Climate, then restart Home Assistant.
-4. Add the integration. Turn `simulation` on. Keep `dry_run` on.
+4. Add the integration. Turn `simulation` on. Keep `dry_run` on. Set `min_on_seconds` and
+   `min_off_seconds` to 0, so every row of the table below takes effect at once. Raise them
+   later to watch the guard rules of section 6.5.
 5. Add one room per row of section 3.3. Give the room its name only, because the component
    derives the virtual valve and the virtual source.
 6. Read the computed commands in the log for one cycle.
@@ -530,7 +532,7 @@ valves.
 | Knob | Value | Expected |
 | --- | --- | --- |
 | `number.sim_front_room_room_temperature` | 19.0 | The room calls. The valve reaches the setpoint. The boiler reaches 31 with `hvac_action` heating. |
-| the same | 21.5 | The room stops. The boiler reaches 15 with mode `off`. |
+| the same | 21.5 | The room stops. The boiler reaches 15 with mode `off`, because the bench holds the minimum on time at 0. |
 | `number.sim_outdoor_temperature` | 19.0 | Status `locked_out`. The boiler at 15. The valves at `off_setpoint`. |
 | `switch.room_climate_lockout_override` | on | The lockout stops, and the room calls again. |
 | `switch.sim_front_room_window` | on | The demand stops, and the valve closes in the same cycle. |

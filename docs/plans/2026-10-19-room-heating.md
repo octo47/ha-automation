@@ -2846,7 +2846,6 @@ outdoor temperature. The entity classes live only in `sim.py`.
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_sim.py
 """The bench: virtual valves, a virtual boiler and the knobs."""
 
 from __future__ import annotations
@@ -2874,6 +2873,8 @@ def sim_options(**overrides: object) -> dict[str, object]:
         "boiler_entity": "climate.sim_boiler",
         "outdoor_sources": ["number.sim_outdoor_temperature"],
         "dry_run": False,
+        "min_on_seconds": 0,
+        "min_off_seconds": 0,
         "rooms": [bench_room()],
     }
     payload.update(overrides)
@@ -2891,9 +2892,7 @@ async def setup_bench(hass: HomeAssistant, **overrides: object) -> MockConfigEnt
 
 
 async def set_number(hass: HomeAssistant, entity_id: str, value: float) -> None:
-    await hass.services.async_call(
-        "number", "set_value", {"entity_id": entity_id, "value": value}
-    )
+    await hass.services.async_call("number", "set_value", {"entity_id": entity_id, "value": value})
     await hass.async_block_till_done()
 
 
@@ -2989,6 +2988,19 @@ async def test_an_offline_valve_reports_unavailable(hass: HomeAssistant) -> None
     await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
     await hass.async_block_till_done()
     assert hass.states.get("climate.sim_front_room_valve").state == "unavailable"
+
+
+async def test_an_offline_room_takes_its_knobs_and_sensors_away(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
+    await hass.async_block_till_done()
+    for entity_id in (
+        "number.sim_front_room_valve_local_temperature",
+        "number.sim_front_room_valve_external_measured_room_sensor",
+        "sensor.sim_front_room_valve_position",
+        "binary_sensor.sim_front_room_heat_required",
+    ):
+        assert hass.states.get(entity_id).state == "unavailable", entity_id
 
 
 async def test_an_open_window_closes_the_valve(hass: HomeAssistant) -> None:
@@ -3355,6 +3367,26 @@ plus `SimSwitchEntity(f"{SIM_MARKER}{room.room_id}_window", ...)` and `..._offli
 `switch.py`, `SimBoilerFiringBinary()` in `binary_sensor.py`, and the position sensors in
 `sensor.py`. `number.py` is a new platform, so `PLATFORMS` gains `Platform.NUMBER`.
 
+
+As built, and why the module differs from the block above:
+
+1. `SimNumberEntity` takes `minimum`, `maximum`, `step`, `device_class` and `unit`. The three
+   temperature knobs use 5 to 35 °C with a step of 0.1. The feed knob uses −8000 to 3500 with a
+   step of 1 and no device class, which is the range of the real feed entity.
+2. The knobs are named so their entity ids match the specification: `..._valve_local_temperature`
+   and `..._valve_external_measured_room_sensor`. A shorter name yields
+   `number.sim_front_room_external_sensor`, which is not the id of section 7.4.
+3. State comes through `_attr_*` values that a watched state change recomputes, because pyright
+   strict rejects a plain property that overrides a cached property of Home Assistant.
+4. `_SimEntity` watches the offline knob of its room and refreshes its availability, so a flip of
+   `switch.sim_<room>_offline` reaches the valve, its knobs and its sensors.
+5. Unique ids carry the entry id, so a simulated entry and a real entry can both hold a room
+   called `front_room`.
+6. Both climate entities set `_attr_temperature_unit`, without which the entity raises at add
+   time.
+7. The bench options set `min_on_seconds` and `min_off_seconds` to 0, so a knob flip releases the
+   boiler at once.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_sim.py -v`
@@ -3397,8 +3429,9 @@ Expected: FAIL with `KeyError: 'name'`, because `hacs.json` has no `name` field 
    the eight dashboard cards that change.
 3. Write `dashboard/room-climate.yaml` with one thermostat card per room, the house panel and
    one history graph per room.
-4. Write `docs/room-heating.runbook.md` with the fourteen steps of the spec's section 8, the
-   rollback steps, and the feed-scale confirmation of steps 6 and 7 as its own section.
+4. Write `docs/room-heating.runbook.md` with both phases of the spec's section 8, the rollback
+   steps, and the feed-scale confirmation of section 8.2 step 3 as its own section. Phase A
+   must state that the bench holds `min_on_seconds` and `min_off_seconds` at 0.
 5. Write `scripts/probe_live.py`. It reads the token from `~/.hermes/ha_token`, prints the
    room climate entities with their attributes, the boiler state, the status sensor, and the
    current value of every feed entity.
