@@ -1,0 +1,109 @@
+# The bench view of the Room Climate dashboard.
+#
+# The knobs, the virtual valves and the virtual boiler of the simulation house. The view drives
+# the knob table of the spec's section 8.1 step 8. A simulated entry names only sim_ entities,
+# so the bench touches no real valve and it cannot start the real boiler.
+
+title: Room Climate Bench
+path: room-climate-bench
+icon: mdi:flask-outline
+cards:
+  # The virtual boiler, its firing signal, the outdoor knob and the house signals of the entry.
+  - type: entities
+    title: House
+    entities:
+      - entity: climate.sim_boiler
+      - entity: binary_sensor.sim_boiler_firing
+      - entity: number.sim_outdoor_temperature
+      - entity: sensor.room_climate_status
+      - entity: switch.room_climate_boiler_automation
+      - entity: switch.room_climate_lockout_override
+
+  # One card per room: the virtual valve, its position, the three knobs and the two switches.
+  - type: entities
+    title: Study
+    entities:
+      - entity: climate.sim_study_valve
+      - entity: sensor.sim_study_valve_position
+      - entity: number.sim_study_room_temperature
+      - entity: number.sim_study_valve_local_temperature
+      - entity: number.sim_study_valve_external_measured_room_sensor
+      - entity: switch.sim_study_window
+      - entity: switch.sim_study_offline
+
+  - type: entities
+    title: Bedroom
+    entities:
+      - entity: climate.sim_bedroom_valve
+      - entity: sensor.sim_bedroom_valve_position
+      - entity: number.sim_bedroom_room_temperature
+      - entity: number.sim_bedroom_valve_local_temperature
+      - entity: number.sim_bedroom_valve_external_measured_room_sensor
+      - entity: switch.sim_bedroom_window
+      - entity: switch.sim_bedroom_offline
+
+  - type: entities
+    title: Guest Room
+    entities:
+      - entity: climate.sim_guest_room_valve
+      - entity: sensor.sim_guest_room_valve_position
+      - entity: number.sim_guest_room_room_temperature
+      - entity: number.sim_guest_room_valve_local_temperature
+      - entity: number.sim_guest_room_valve_external_measured_room_sensor
+      - entity: switch.sim_guest_room_window
+      - entity: switch.sim_guest_room_offline
+
+  - type: entities
+    title: Front Room
+    entities:
+      - entity: climate.sim_front_room_valve
+      - entity: sensor.sim_front_room_valve_position
+      - entity: number.sim_front_room_room_temperature
+      - entity: number.sim_front_room_valve_local_temperature
+      - entity: number.sim_front_room_valve_external_measured_room_sensor
+      - entity: switch.sim_front_room_window
+      - entity: switch.sim_front_room_offline
+
+  - type: entities
+    title: Back Room
+    entities:
+      - entity: climate.sim_back_room_valve
+      - entity: sensor.sim_back_room_valve_position
+      - entity: number.sim_back_room_room_temperature
+      - entity: number.sim_back_room_valve_local_temperature
+      - entity: number.sim_back_room_valve_external_measured_room_sensor
+      - entity: switch.sim_back_room_window
+      - entity: switch.sim_back_room_offline
+
+  - type: entities
+    title: Side Room
+    entities:
+      - entity: climate.sim_side_room_valve
+      - entity: sensor.sim_side_room_valve_position
+      - entity: number.sim_side_room_room_temperature
+      - entity: number.sim_side_room_valve_local_temperature
+      - entity: number.sim_side_room_valve_external_measured_room_sensor
+      - entity: switch.sim_side_room_window
+      - entity: switch.sim_side_room_offline
+
+  - type: entities
+    title: Office
+    entities:
+      - entity: climate.sim_office_valve
+      - entity: sensor.sim_office_valve_position
+      - entity: number.sim_office_room_temperature
+      - entity: number.sim_office_valve_local_temperature
+      - entity: number.sim_office_valve_external_measured_room_sensor
+      - entity: switch.sim_office_window
+      - entity: switch.sim_office_offline
+
+  - type: entities
+    title: Store Room
+    entities:
+      - entity: climate.sim_store_room_valve
+      - entity: sensor.sim_store_room_valve_position
+      - entity: number.sim_store_room_room_temperature
+      - entity: number.sim_store_room_valve_local_temperature
+      - entity: number.sim_store_room_valve_external_measured_room_sensor
+      - entity: switch.sim_store_room_window
+      - entity: switch.sim_store_room_offline
