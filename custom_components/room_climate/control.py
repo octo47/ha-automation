@@ -6,6 +6,10 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from .const import (
+    CALIBRATION_MAX_TEMPERATURE,
+    CALIBRATION_MIN_TEMPERATURE,
+    CALIBRATION_NONE,
+    CALIBRATION_TOLERANCE_C,
     MAX_PLAUSIBLE_TEMPERATURE,
     MIN_PLAUSIBLE_TEMPERATURE,
     REPEAT_THRESHOLD,
@@ -13,6 +17,8 @@ from .const import (
     VALVE_MODE_MODULATE,
 )
 from .models import RoomConfig, TemperatureSource
+
+FEED_SUFFIX = "_external_measured_room_sensor"
 
 
 def _plausible(value: float | None) -> bool:
@@ -130,3 +136,27 @@ def valve_targets(
                 continue
         commands[entity_id] = rounded
     return commands
+
+
+def feed_entity_id(valve_entity_id: str) -> str:
+    """Return the feed entity of one valve."""
+    return f"number.{valve_entity_id.split('.', 1)[1]}{FEED_SUFFIX}"
+
+
+def calibration_values(
+    room: RoomConfig, temperature: float | None, last_written: Mapping[str, float]
+) -> Mapping[str, float]:
+    """Return the calibration writes of one room."""
+    if room.calibration == CALIBRATION_NONE or temperature is None:
+        return {}
+    clamped = min(max(temperature, CALIBRATION_MIN_TEMPERATURE), CALIBRATION_MAX_TEMPERATURE)
+    value = float(round(clamped * room.calibration_scale))
+    tolerance = CALIBRATION_TOLERANCE_C * room.calibration_scale
+    writes: dict[str, float] = {}
+    for valve in room.valves:
+        entity_id = feed_entity_id(valve)
+        previous = last_written.get(entity_id)
+        if previous is not None and abs(previous - value) < tolerance:
+            continue
+        writes[entity_id] = value
+    return writes
