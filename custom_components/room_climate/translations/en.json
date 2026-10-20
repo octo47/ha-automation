@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Room Climate",
+        "description": "Add the house that Room Climate controls."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Room Climate options"
+      }
+    }
+  },
+  "title": "Room Climate"
+}

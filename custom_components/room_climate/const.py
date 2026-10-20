@@ -1,0 +1,82 @@
+"""Constants of the integration."""
+
+DOMAIN = "room_climate"
+
+CONF_BOILER_ENTITY = "boiler_entity"
+CONF_BOILER_ON_TEMPERATURE = "boiler_on_temperature"
+CONF_BOILER_OFF_TEMPERATURE = "boiler_off_temperature"
+CONF_BOILER_ON_HVAC_MODE = "boiler_on_hvac_mode"
+CONF_BOILER_OFF_HVAC_MODE = "boiler_off_hvac_mode"
+CONF_OUTDOOR_SOURCES = "outdoor_sources"
+CONF_LOCKOUT_TEMPERATURE = "lockout_temperature"
+CONF_LOCKOUT_HYSTERESIS = "lockout_hysteresis"
+CONF_MIN_ON_SECONDS = "min_on_seconds"
+CONF_MIN_OFF_SECONDS = "min_off_seconds"
+CONF_UPDATE_INTERVAL_SECONDS = "update_interval_seconds"
+CONF_DRY_RUN = "dry_run"
+CONF_MASTER_ENABLED = "master_enabled"
+CONF_EMA_SECONDS = "ema_seconds"
+CONF_ROOMS = "rooms"
+
+CONF_ROOM_ID = "room_id"
+CONF_NAME = "name"
+CONF_AREA_ID = "area_id"
+CONF_VALVES = "valves"
+CONF_SOURCES = "sources"
+CONF_CALIBRATION = "calibration"
+CONF_CALIBRATION_SCALE = "calibration_scale"
+CONF_VALVE_MODE = "valve_mode"
+CONF_OPEN_OFFSET = "open_offset"
+CONF_MIN_TEMP = "min_temp"
+CONF_MAX_TEMP = "max_temp"
+CONF_HYSTERESIS = "hysteresis"
+CONF_OFF_SETPOINT = "off_setpoint"
+CONF_VALVE_COMMAND_INTERVAL_SECONDS = "valve_command_interval_seconds"
+CONF_WINDOW_SENSORS = "window_sensors"
+CONF_DEMAND_FALLBACK_SENSORS = "demand_fallback_sensors"
+
+DEFAULT_BOILER_ENTITY = "climate.heating_heat"
+DEFAULT_BOILER_ON_TEMPERATURE = 31.0
+DEFAULT_BOILER_OFF_TEMPERATURE = 15.0
+DEFAULT_OUTDOOR_SOURCES = ("sensor.outdoor_temperature",)
+DEFAULT_LOCKOUT_TEMPERATURE = 18.0
+DEFAULT_LOCKOUT_HYSTERESIS = 1.0
+DEFAULT_MIN_ON_SECONDS = 300
+DEFAULT_MIN_OFF_SECONDS = 300
+DEFAULT_UPDATE_INTERVAL_SECONDS = 30
+DEFAULT_EMA_SECONDS = 1800
+DEFAULT_HYSTERESIS = 0.2
+DEFAULT_OFF_SETPOINT = 5.0
+DEFAULT_OPEN_OFFSET = 2.0
+DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS = 300
+DEFAULT_CALIBRATION_SCALE = 100
+DEFAULT_DRY_RUN = True
+
+CALIBRATION_EXTERNAL = "external_sensor"
+CALIBRATION_NONE = "none"
+VALVE_MODE_MODULATE = "modulate"
+VALVE_MODE_BOOST = "boost"
+
+CALIBRATION_MIN_TEMPERATURE = 5.0
+CALIBRATION_MAX_TEMPERATURE = 35.0
+CALIBRATION_TOLERANCE_C = 0.1
+SETPOINT_STEP = 0.5
+WINDOW_OPEN_STATES = ("open", "on")
+SIM_MARKER = "sim_"
+REPEAT_THRESHOLD = 0.25
+MIN_PLAUSIBLE_TEMPERATURE = -20.0
+MAX_PLAUSIBLE_TEMPERATURE = 60.0
+
+REASON_MASTER_OFF = "master_off"
+REASON_LOCKOUT = "lockout"
+REASON_ROOM_DEMAND = "room_demand"
+REASON_NO_DEMAND = "no_demand"
+
+STATUS_HEATING = "heating"
+STATUS_IDLE = "idle"
+STATUS_LOCKED_OUT = "locked_out"
+STATUS_DISABLED = "disabled"
+STATUS_DRY_RUN = "dry_run"
+STATUS_DEGRADED = "degraded"
+
+SERVICE_RECOMPUTE = "recompute"
