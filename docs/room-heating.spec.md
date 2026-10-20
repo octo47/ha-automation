@@ -44,6 +44,11 @@ thermostat has no separate call-for-heat input.
 A probe on 2026-10-19 measured the facts below. The component must work with this
 installation.
 
+The names in this document are an example house. The operator's own room list, its entity
+ids and its sensor ids are private, and the config flow holds the real ones. The example
+house has three rooms: Front Room, Back Room and Side Room. Front Room has one valve, Back
+Room has one valve, and Side Room has two.
+
 ### 3.1 Heating chain
 
 - The boiler is the Hive dual-channel thermostat, model `Dual channel heating and hot
@@ -53,7 +58,7 @@ installation.
 - `climate.heating_water` is the hot water entity. This component must not control it.
 - A Hive boiler turns on only through a high setpoint. The measured workaround sets the
   target to 31 °C. The reverse sets the target to 15 °C.
-- Ten Hive TRVs are present, all `Hive Radiator valve` over Zigbee2MQTT.
+- The installation holds Hive TRVs, all `Hive Radiator valve` over Zigbee2MQTT.
 - Each TRV publishes `binary_sensor.<trv>_heat_required`. The group entity
   `binary_sensor.some_trv_wants_heat` is the OR of those signals.
 - The automation `automation.heat_on_demand` (id `1731526329445`) reads that group entity
@@ -81,13 +86,12 @@ entries.
 
 The feed entity has a range of −8000 to 3500, and a step of 1. The value −8000 means
 "no external measurement". If the scale is 0.01 °C, the value 2150 means 21.5 °C, and the
-usable band is 500 to 3500, which is 5 °C to 35 °C. **The scale is not confirmed.** Steps
-6 and 7 of section 8 confirm it on one valve before the component writes to ten valves.
+usable band is 500 to 3500, which is 5 °C to 35 °C. **The scale is not confirmed.** Step 3
+of section 8.2 confirms it on one valve before the component writes to the other valves.
 
-Every Hive TRV exposes the feed entity. The probe read nine of them in the state −8000,
-which means "no external measurement". The tenth is `unavailable` with its valve. The
-`regulation_setpoint_offset` entity is present as well, and this component does not use
-it.
+Every Hive TRV of this model exposes the feed entity, and the probe read them in the state
+−8000, which means "no external measurement". The `regulation_setpoint_offset` entity is
+present as well, and this component does not use it.
 
 The valve regulates its own position. It publishes the result as
 `sensor.<trv>_pi_heating_demand`. The component does not compute a valve position.
@@ -95,64 +99,27 @@ The valve regulates its own position. It publishes the result as
 Some valves carry `switch.<trv>_heat_available` in the state `off`, which means the valve
 refuses heat. The component must not write that switch.
 
-### 3.3 Rooms measured today
+### 3.3 The example rooms
 
-| Area | Valves | Temperature sources |
+| Room | Valves | Temperature sources |
 | --- | --- | --- |
-| Study | `climate.trv_study` | `sensor.study_sensor_temperature`, `sensor.trv_study_local_temperature` |
-| Bedroom | `climate.trv_bedroom` | `sensor.sensor_bedroom_temperature`, `sensor.trv_bedroom_local_temperature` |
-| Guest Room | `climate.trv_guest_wall`, `climate.trv_guest_window` | `sensor.sensor_guest_room_temperature`, `sensor.trv_guest_wall_local_temperature`, `sensor.trv_guest_window_local_temperature` |
-| Front Room | `climate.trv_front_room` | `sensor.trv_front_room_local_temperature` |
-| Back Room | no valve measured | `sensor.sensor_back_room_temperature` |
-| Side Room | `climate.trv_side_room_a`, `climate.trv_side_room_b` | `sensor.sensor_side_room_temperature`, `sensor.trv_side_room_a_local_temperature`, `sensor.trv_side_room_b_local_temperature` |
-| Office | `climate.trv_office` | `sensor.sensor_office_temperature`, `sensor.trv_office_local_temperature` |
-| Store Room | `climate.0x0011223344556677` | `sensor.sensor_store_room_room_temperature`, `sensor.0x0011223344556677_local_temperature` |
+| Front Room | `climate.trv_front_room` | `sensor.front_room_temperature`, `sensor.trv_front_room_local_temperature` |
+| Back Room | `climate.trv_back_room` | `sensor.back_room_temperature` |
+| Side Room | `climate.trv_side_room_a`, `climate.trv_side_room_b` | `sensor.side_room_temperature`, `sensor.trv_side_room_a_local_temperature`, `sensor.trv_side_room_b_local_temperature` |
 
-The probe cannot measure which valve the Back Room Better Thermostat entry drives. The
-Back Room row has no valve. The operator must confirm the Back Room valve. The runbook of
-section 8 removes Better Thermostat, so a room without a valve heats nothing.
+The example rooms show the shape of a room: a valve list, a source list, and a weight on
+each source. The operator adds the real rooms in the config flow, and the component never
+holds a room that the operator did not add.
 
-`climate.trv_dining_room` is `unavailable` today. The Dining Room has one valve and the
-source `sensor.sensor_dining_room_temperature`.
-
-Rooms without a valve: Sun Room, Workshop, Family Bathroom, Plant Room, Wet Room.
-Each has a temperature sensor.
+A valve can be missing, and a valve can be `unavailable`. The operator confirms such a
+valve in the config flow. A room with no available valve heats nothing, and the component
+reports that room as degraded.
 
 ### 3.4 Outdoor temperature sources
 
-- `sensor.outdoor_temperature` (Ecowitt, 10.7 °C at probe time).
-- `weather.forecast_home` (met.no, 10.6 °C at probe time). `weather.forecast_home` is
-  `unavailable`.
-
-### 3.5 Software and dependencies
-
-- Better Thermostat 1.9.3 holds eight entries, over HACS.
-- HACS is installed and loaded.
-- Only port 8123 and port 4357 answer on the HA host. No SSH add-on and no Samba add-on
-  exist. The HACS user interface is the only install route.
-- The integration must not depend on Better Thermostat or on any other custom
-  integration.
-- The integration declares one runtime requirement, `pydantic>=2.11,<3`. Home Assistant
-  installs a declared requirement at setup. `pydantic` is the house model for every
-  boundary, so the integration keeps it. Section 10 lists the alternative.
-
-### 3.6 The removal of Better Thermostat
-
-Better Thermostat is licensed AGPL-3.0. This repository must not copy its code, because
-AGPL-3.0 would then govern this repository. The component reimplements the room logic. It
-takes no code from Better Thermostat. Section 10 lists the alternative.
-
-The removal has this measured blast radius.
-
-- 122 entities carry the platform `better_thermostat`. They disappear: 8 climate entities,
-  56 number entities, 48 sensor entities and 10 switch entities.
-- The one storage dashboard, `lovelace`, references eight `climate.bt_*` entities and no
-  other Better Thermostat entity.
-- No automation and no script references a Better Thermostat entity. The 13 automations
-  are clean.
-
-The history of the Better Thermostat sensors has no replacement. The component adds one
-graph sensor per room, and section 7.3 states it.
+- `sensor.outdoor_temperature`, the weather station of the operator.
+- `weather.forecast_home` (met.no). A second weather entity of the same account can carry
+  the same name with a numeric suffix.
 
 ## 4. Scope
 

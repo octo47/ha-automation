@@ -63,17 +63,19 @@ hand, because the component runs no thermal model.
    `climate.heating_heat`.
 7. Watch one full heating cycle per room. The boiler reaches 31 °C when a room calls, and 15 °C
    when the last room stops.
-8. Repoint the eight dashboard cards from `climate.bt_*` to `climate.room_climate_*`. The table
+8. Repoint every Better Thermostat card from `climate.bt_*` to `climate.room_climate_*`. The README
+   carries the mapping.
    is in the repository [README](../README.md), and `dashboard/room-climate.yaml` is a starting
    view.
-9. Remove the eight Better Thermostat entries from **Settings**, then **Devices and services**.
+9. Remove every Better Thermostat entry from **Settings**, then **Devices and services**.
 10. Remove Better Thermostat from HACS.
 
 Step 8 must happen before step 9. The dashboard and the removed entities share no history, so a
 card points at a missing entity between the two steps.
 
-A room needs at least one valve, so the Back Room room is added only after the operator confirms
-which valve the Back Room Better Thermostat entry drives. A room whose only valve is `unavailable`
+A room needs at least one valve. Add a room only after the operator confirms its valve, because a
+valve that Better Thermostat managed is not always the valve of the same name. A room whose only
+valve is `unavailable`
 holds its valves closed and reports degraded, so an unconfirmed valve heats nothing.
 
 ### Entity ids of a second entry
@@ -114,7 +116,7 @@ agree on the room temperature. `boost` is the fallback for a valve that ignores 
    at the removal, so a removed component does not leave the boiler running.
 2. Add the Better Thermostat entries again.
 3. Enable `automation.heat_on_demand`.
-4. Repoint the eight dashboard cards back to `climate.bt_*`.
+4. Repoint every dashboard card back to `climate.bt_*`.
 
 The bench entry is harmless to keep: it names only `sim_` entities, so it cannot move a real
 valve or start the real boiler.

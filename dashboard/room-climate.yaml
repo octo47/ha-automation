@@ -3,6 +3,9 @@
 # One thermostat card per room of the spec's section 3.3, the house panel, and one history
 # graph per room that puts the weighted room temperature against its average. Paste the view
 # into the views list of a dashboard, or into the raw configuration editor.
+#
+# The room names below are the example rooms of the specification. Replace each one with the
+# room name of the config entry.
 
 title: Room Climate
 path: room-climate
@@ -22,43 +25,15 @@ cards:
       - entity: switch.room_climate_lockout_override
       - entity: climate.heating_heat
 
-  # One thermostat per room of section 3.3.
-  - type: thermostat
-    entity: climate.room_climate_study
-  - type: thermostat
-    entity: climate.room_climate_bedroom
-  - type: thermostat
-    entity: climate.room_climate_guest_room
+  # One thermostat per room.
   - type: thermostat
     entity: climate.room_climate_front_room
   - type: thermostat
     entity: climate.room_climate_back_room
   - type: thermostat
     entity: climate.room_climate_side_room
-  - type: thermostat
-    entity: climate.room_climate_office
-  - type: thermostat
-    entity: climate.room_climate_store_room
 
   # One graph per room: the weighted temperature against the smoothed temperature.
-  - type: history-graph
-    title: Study
-    hours_to_show: 24
-    entities:
-      - entity: sensor.room_climate_study_temperature
-      - entity: sensor.room_climate_study_temperature_ema
-  - type: history-graph
-    title: Bedroom
-    hours_to_show: 24
-    entities:
-      - entity: sensor.room_climate_bedroom_temperature
-      - entity: sensor.room_climate_bedroom_temperature_ema
-  - type: history-graph
-    title: Guest Room
-    hours_to_show: 24
-    entities:
-      - entity: sensor.room_climate_guest_room_temperature
-      - entity: sensor.room_climate_guest_room_temperature_ema
   - type: history-graph
     title: Front Room
     hours_to_show: 24
@@ -77,15 +52,3 @@ cards:
     entities:
       - entity: sensor.room_climate_side_room_temperature
       - entity: sensor.room_climate_side_room_temperature_ema
-  - type: history-graph
-    title: Office
-    hours_to_show: 24
-    entities:
-      - entity: sensor.room_climate_office_temperature
-      - entity: sensor.room_climate_office_temperature_ema
-  - type: history-graph
-    title: Store Room
-    hours_to_show: 24
-    entities:
-      - entity: sensor.room_climate_store_room_temperature
-      - entity: sensor.room_climate_store_room_temperature_ema

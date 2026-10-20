@@ -42,51 +42,37 @@ fault list are in [docs/room-heating.runbook.md](docs/room-heating.runbook.md).
 
 ### Rooms
 
-The measured rooms of the spec's section 3.3. Each row is one room of the integration and one
+The example rooms of the spec's section 3.3. Each row is one room of the integration and one
 `climate.room_climate_<room>` thermostat, plus `sensor.room_climate_<room>_temperature` and
 `sensor.room_climate_<room>_temperature_ema` for a graph.
 
-| Area | Valves | Temperature sources |
+| Room | Valves | Temperature sources |
 | --- | --- | --- |
-| Study | `climate.trv_study` | `sensor.study_sensor_temperature`, `sensor.trv_study_local_temperature` |
-| Bedroom | `climate.trv_bedroom` | `sensor.sensor_bedroom_temperature`, `sensor.trv_bedroom_local_temperature` |
-| Guest Room | `climate.trv_guest_wall`, `climate.trv_guest_window` | `sensor.sensor_guest_room_temperature`, `sensor.trv_guest_wall_local_temperature`, `sensor.trv_guest_window_local_temperature` |
-| Front Room | `climate.trv_front_room` | `sensor.trv_front_room_local_temperature` |
-| Back Room | no valve measured | `sensor.sensor_back_room_temperature` |
-| Side Room | `climate.trv_side_room_a`, `climate.trv_side_room_b` | `sensor.sensor_side_room_temperature`, `sensor.trv_side_room_a_local_temperature`, `sensor.trv_side_room_b_local_temperature` |
-| Office | `climate.trv_office` | `sensor.sensor_office_temperature`, `sensor.trv_office_local_temperature` |
-| Store Room | `climate.0x0011223344556677` | `sensor.sensor_store_room_room_temperature`, `sensor.0x0011223344556677_local_temperature` |
+| Front Room | `climate.trv_front_room` | `sensor.front_room_temperature`, `sensor.trv_front_room_local_temperature` |
+| Back Room | `climate.trv_back_room` | `sensor.back_room_temperature` |
+| Side Room | `climate.trv_side_room_a`, `climate.trv_side_room_b` | `sensor.side_room_temperature`, `sensor.trv_side_room_a_local_temperature`, `sensor.trv_side_room_b_local_temperature` |
 
-The Dining Room is a ninth room: one valve `climate.trv_dining_room` and one source
-`sensor.sensor_dining_room_temperature`. The valve is `unavailable` today.
-
-A room needs at least one valve, so the Back Room room is added after the operator confirms which
-valve the Back Room Better Thermostat entry drives.
+These three rooms are an example. The operator's own room list, its entity ids and its sensor
+ids are private, and the config flow holds the real ones. A room needs at least one valve, and
+the operator confirms each valve in the config flow.
 
 `dashboard/room-climate.yaml` is a starting view with one thermostat card and one history graph
-per row of the table.
+per room.
 
 ### Dashboard cards
 
-Better Thermostat leaves eight cards on the `lovelace` dashboard, and every one of them points
-at a `climate.bt_*` entity. Repoint each card at the Room Climate thermostat of the same room
-before the Better Thermostat entries are removed.
+Better Thermostat leaves one card per Better Thermostat room on the dashboard, and each card
+points at a `climate.bt_*` entity. Repoint each card at the Room Climate thermostat of the same
+room before the Better Thermostat entries are removed.
 
 | Better Thermostat card | Room Climate card |
 | --- | --- |
-| `climate.bt_study_bt_study` | `climate.room_climate_study` |
-| `climate.bt_bedroom_bt_bedroom` | `climate.room_climate_bedroom` |
-| `climate.bt_guest_room_bt_guest_room` | `climate.room_climate_guest_room` |
+| `climate.bt_front_room` | `climate.room_climate_front_room` |
 | `climate.bt_back_room` | `climate.room_climate_back_room` |
-| `climate.bt_side_room_bt_side_room` | `climate.room_climate_side_room` |
-| `climate.bt_office` | `climate.room_climate_office` |
-| `climate.bt_store_room_room` | `climate.room_climate_store_room` |
-| `climate.bt_dining_room` | `climate.room_climate_dining_room` |
 
-The Front Room has no Better Thermostat card, because Better Thermostat holds no Front Room entry; the Front Room
-card is new. The Back Room and the Dining Room cards point at a room whose valve is unconfirmed
-or `unavailable` today, so those two rooms heat nothing until the operator confirms the valve.
-The runbook carries the step.
+A room can exist without a Better Thermostat entry, and then its card is new. A room whose
+valve is unconfirmed or `unavailable` heats nothing until the operator confirms the valve. The
+runbook carries the step.
 
 ## Design records
 

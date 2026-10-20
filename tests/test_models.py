@@ -11,7 +11,7 @@ from custom_components.room_climate.models import HouseConfig, RoomConfig, Tempe
 def room(room_id: str = "front_room", **overrides: object) -> RoomConfig:
     payload: dict[str, object] = {
         "room_id": room_id,
-        "name": room_id.title(),
+        "name": room_id.replace("_", " ").title(),
         "valves": (f"climate.trv_{room_id}",),
         "sources": (TemperatureSource(entity_id=f"sensor.{room_id}_temperature"),),
     }
@@ -71,7 +71,9 @@ def test_house_rejects_one_valve_in_two_rooms() -> None:
 
 
 def test_house_rejects_one_source_in_two_rooms() -> None:
-    other = room("back_room", sources=(TemperatureSource(entity_id="sensor.front_room_temperature"),))
+    other = room(
+        "back_room", sources=(TemperatureSource(entity_id="sensor.front_room_temperature"),)
+    )
     with pytest.raises(ValidationError) as error:
         house(rooms=(room(), other))
     assert "sensor.front_room_temperature" in str(error.value)

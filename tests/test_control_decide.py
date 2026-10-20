@@ -80,7 +80,9 @@ def test_the_calling_room_commands_its_valve() -> None:
     front_room = next(command for command in output.rooms if command.room_id == "front_room")
     assert front_room.calling is True
     assert front_room.valve_targets == {"climate.trv_front_room": 21.0}
-    assert front_room.calibration_values == {"number.trv_front_room_external_measured_room_sensor": 2000}
+    assert front_room.calibration_values == {
+        "number.trv_front_room_external_measured_room_sensor": 2000
+    }
 
 
 def test_no_calling_room_keeps_the_boiler_off() -> None:
@@ -166,7 +168,10 @@ def test_the_master_switch_off_stops_the_boiler_at_once() -> None:
 
 def test_a_window_open_closes_the_valve_without_waiting() -> None:
     config = house(
-        rooms=(room("front_room", window_sensors=("binary_sensor.front_room_window",)), room("back_room"))
+        rooms=(
+            room("front_room", window_sensors=("binary_sensor.front_room_window",)),
+            room("back_room"),
+        )
     )
     output = decide(
         payload(
@@ -183,7 +188,10 @@ def test_a_window_open_closes_the_valve_without_waiting() -> None:
 
 def test_a_switch_style_window_sensor_also_suspends_the_demand() -> None:
     config = house(
-        rooms=(room("front_room", window_sensors=("switch.sim_front_room_window",)), room("back_room"))
+        rooms=(
+            room("front_room", window_sensors=("switch.sim_front_room_window",)),
+            room("back_room"),
+        )
     )
     output = decide(payload(house=config, window_states={"switch.sim_front_room_window": "on"}))
     front_room = next(command for command in output.rooms if command.room_id == "front_room")
@@ -211,7 +219,10 @@ def test_a_room_without_a_source_is_degraded_and_closed() -> None:
 def test_the_valve_demand_keeps_a_room_without_a_source_warm() -> None:
     config = house(
         rooms=(
-            room("front_room", demand_fallback_sensors=("binary_sensor.trv_front_room_heat_required",)),
+            room(
+                "front_room",
+                demand_fallback_sensors=("binary_sensor.trv_front_room_heat_required",),
+            ),
             room("back_room"),
         )
     )

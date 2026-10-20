@@ -79,9 +79,11 @@ async def test_a_room_device_lands_in_its_area(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
 
-    devices = device_registry.async_get(hass).devices
-    front_room = [device for device in devices if "front_room" in (device.name or "").lower()]
-    assert front_room and front_room[0].area_id == area.id
+    device = device_registry.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, f"{entry.entry_id}_front_room"), entry.entry_id
+    )
+    assert device is not None
+    assert device.area_id == area.id
 
 
 async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:

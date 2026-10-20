@@ -137,14 +137,18 @@ async def test_the_local_sensor_is_the_measurement_without_the_calibration(
 
 async def test_an_offline_valve_reports_unavailable(hass: HomeAssistant) -> None:
     await setup_bench(hass)
-    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"}
+    )
     await hass.async_block_till_done()
     assert hass.states.get("climate.sim_front_room_valve").state == "unavailable"
 
 
 async def test_an_offline_room_takes_its_knobs_and_sensors_away(hass: HomeAssistant) -> None:
     await setup_bench(hass)
-    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"}
+    )
     await hass.async_block_till_done()
     for entity_id in (
         "number.sim_front_room_valve_local_temperature",
@@ -161,7 +165,9 @@ async def test_an_open_window_closes_the_valve(hass: HomeAssistant) -> None:
     await set_target(hass, "climate.room_climate_front_room", 21.0)
     assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 21.0
 
-    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_window"})
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": "switch.sim_front_room_window"}
+    )
     await hass.async_block_till_done()
 
     assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 5.0

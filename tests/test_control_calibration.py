@@ -18,7 +18,10 @@ def room(**overrides: object) -> RoomConfig:
 
 
 def test_the_feed_entity_follows_the_valve_object_id() -> None:
-    assert feed_entity_id("climate.trv_front_room") == "number.trv_front_room_external_measured_room_sensor"
+    assert (
+        feed_entity_id("climate.trv_front_room")
+        == "number.trv_front_room_external_measured_room_sensor"
+    )
     assert (
         feed_entity_id("climate.0x0011223344556677")
         == "number.0x0011223344556677_external_measured_room_sensor"
