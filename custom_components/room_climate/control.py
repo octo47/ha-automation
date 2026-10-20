@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
-from .const import MAX_PLAUSIBLE_TEMPERATURE, MIN_PLAUSIBLE_TEMPERATURE
+from .const import (
+    MAX_PLAUSIBLE_TEMPERATURE,
+    MIN_PLAUSIBLE_TEMPERATURE,
+    REPEAT_THRESHOLD,
+    SETPOINT_STEP,
+    VALVE_MODE_MODULATE,
+)
 from .models import RoomConfig, TemperatureSource
 
 
@@ -84,3 +91,42 @@ def next_calling(
     if previous:
         return temperature <= target + room.hysteresis
     return temperature < target - room.hysteresis
+
+
+def round_setpoint(value: float) -> float:
+    """Round a target temperature to the half degree step of the valves."""
+    return round(value / SETPOINT_STEP) * SETPOINT_STEP
+
+
+def valve_targets(
+    room: RoomConfig,
+    *,
+    blocked: bool,
+    calling: bool,
+    target: float | None,
+    last_sent: Mapping[str, float],
+    last_command_at: Mapping[str, datetime],
+    now: datetime,
+) -> Mapping[str, float]:
+    """Return the valve commands, honouring the repeat rule and the command interval."""
+    if blocked or target is None:
+        wanted = room.off_setpoint
+    elif room.valve_mode == VALVE_MODE_MODULATE:
+        wanted = target
+    else:
+        wanted = target + room.open_offset if calling else room.off_setpoint
+    rounded = round_setpoint(min(max(wanted, room.min_temp), room.max_temp))
+    commands: dict[str, float] = {}
+    for entity_id in room.valves:
+        sent = last_sent.get(entity_id)
+        if sent is not None and abs(sent - rounded) < REPEAT_THRESHOLD:
+            continue
+        if rounded != room.off_setpoint:
+            since = last_command_at.get(entity_id)
+            if (
+                since is not None
+                and (now - since).total_seconds() < room.valve_command_interval_seconds
+            ):
+                continue
+        commands[entity_id] = rounded
+    return commands
