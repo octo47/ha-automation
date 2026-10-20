@@ -577,7 +577,7 @@ so a card points at a missing entity between the two steps.
 8. The repository must carry a licence file. The component takes no code from Better
    Thermostat, which is AGPL-3.0.
 
-## 10. Decisions owed to the operator
+## 10. Decisions taken
 
 | Decision | Default taken | Alternative |
 | --- | --- | --- |
@@ -588,6 +588,9 @@ so a card points at a missing entity between the two steps.
 | Code from Better Thermostat | Reimplement the logic, and keep this repository outside AGPL-3.0. | Copy the calibration logic, and license this repository AGPL-3.0. |
 | Repository licence | MIT. The component copies no AGPL-3.0 code, so the licence is free. | Another licence of the operator's choice. |
 | The simulation house | Inside the integration, behind `simulation`. One code path, and one install. | A separate test package, or a set of Home Assistant helpers outside the component. |
+
+The operator accepted every default on 2026-10-19. The alternative column records what the
+decision excluded.
 
 ## 11. Acceptance criteria
 

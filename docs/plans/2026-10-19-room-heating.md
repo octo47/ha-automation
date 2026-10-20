@@ -3243,5 +3243,6 @@ function. `calibration_values` returns raw feed units in both. `feed_entity_id` 
 place that derives the feed entity. The service name is `room_climate.recompute` in the
 constants, the service file and the tests.
 
-**Open decisions:** the five rows of the spec's section 10 stay open. Task 11 reads the
-defaults from the spec. A change to a default is a change to the spec first.
+**Decisions:** the operator accepted every default of the spec's section 10 on 2026-10-19.
+The tasks read those defaults from the spec. A change to a default is a change to the spec
+first.
