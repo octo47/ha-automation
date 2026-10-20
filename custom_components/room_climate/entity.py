@@ -21,7 +21,7 @@ def room_device(coordinator: RoomClimateCoordinator, room: RoomConfig) -> Device
     """Return the device that carries the entities of one room."""
     return DeviceInfo(
         identifiers={(DOMAIN, f"{coordinator.entry.entry_id}_{room.room_id}")},
-        name=f"Room Climate {room.name}",
+        name=f"{coordinator.config.name} {room.name}",
     )
 
 

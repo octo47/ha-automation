@@ -405,7 +405,10 @@ One device per room, assigned to the configured area.
 
 Climate entity rules:
 
-1. `hvac_modes` are `off` and `heat`.
+1. The device of a room is named `<house name> <room name>`, and the entity ids follow it.
+   The house entry keeps the name `Room Climate`, so the room of the Front Room yields
+   `climate.room_climate_front_room`.
+2. `hvac_modes` are `off` and `heat`.
 2. `current_temperature` is the weighted room temperature.
 3. `target_temperature` is the setpoint. The entity restores it after a restart.
 4. `hvac_action` is `heating` when the room calls, and `idle` otherwise.
@@ -507,8 +510,10 @@ Switch-over:
    names only `sim_` entities.
 2. The real entry takes the duty when the operator turns its `dry_run` off.
 3. Disable the simulated entry when the bench is no longer useful. Its entities go away.
-4. A second entry adds the suffix `_2` to the house entity ids, for example
-   `switch.room_climate_boiler_automation_2`.
+4. The house name and the room name build every device name, and the entity ids follow the
+   device name. Title the bench entry `Room Climate Bench`, and its entities carry the ids
+   `climate.room_climate_bench_front_room` and `switch.room_climate_bench_boiler_automation`. Two
+   entries with different titles therefore never compete for one entity id.
 
 ## 8. Install, migrate and roll back
 
@@ -520,9 +525,9 @@ valves.
 1. Open HACS, then Integrations.
 2. Add `octo47/ha-automation` as a custom repository of category Integration.
 3. Download Room Climate, then restart Home Assistant.
-4. Add the integration. Turn `simulation` on. Keep `dry_run` on. Set `min_on_seconds` and
-   `min_off_seconds` to 0, so every row of the table below takes effect at once. Raise them
-   later to watch the guard rules of section 6.5.
+4. Add the integration. Turn `simulation` on and name the entry `Room Climate Bench`. Keep
+   `dry_run` on. Set `min_on_seconds` and `min_off_seconds` to 0, so every row of the table
+   below takes effect at once. Raise them later to watch the guard rules of section 6.5.
 5. Add one room per row of section 3.3. Give the room its name only, because the component
    derives the virtual valve and the virtual source.
 6. Read the computed commands in the log for one cycle.
@@ -547,7 +552,7 @@ Step 9 is the purpose of the bench. A parameter changes here, and no real valve 
 
 ### 8.2 Phase B: the real house
 
-1. Add a second entry, with `simulation` off. Fill the house form.
+1. Add a second entry, with `simulation` off, and keep the house name `Room Climate`.
 2. Add one room per radiator group, with the table of section 3.3.
 3. Confirm the scale of the feed entity on one valve. Write the value 2150 into
    `number.<trv>_external_measured_room_sensor`. Read the value back. Watch

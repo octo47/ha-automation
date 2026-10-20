@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from .test_coordinator import calls, setup_entry
+from custom_components.room_climate.const import DOMAIN
+
+from .test_coordinator import calls, options, setup_entry
 
 
 async def test_the_virtual_thermostat_reports_the_weighted_temperature(
@@ -47,6 +50,26 @@ async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
         "binary_sensor.room_climate_front_room_calling",
     ):
         assert hass.states.get(entity_id) is not None, entity_id
+
+
+async def test_a_second_entry_keeps_its_own_title_in_the_entity_ids(
+    hass: HomeAssistant,
+) -> None:
+    await setup_entry(hass, dry_run=True)
+    bench = MockConfigEntry(
+        domain=DOMAIN,
+        title="Room Climate Bench",
+        options=options(dry_run=True, name="Room Climate Bench"),
+    )
+    bench.add_to_hass(hass)
+    await hass.config_entries.async_setup(bench.entry_id)
+    await hass.async_block_till_done()
+
+    assert hass.states.get("climate.room_climate_front_room") is not None
+    assert hass.states.get("climate.room_climate_bench_front_room") is not None
+    assert hass.states.get("switch.room_climate_boiler_automation") is not None
+    assert hass.states.get("switch.room_climate_bench_boiler_automation") is not None
+    assert hass.states.get("climate.room_climate_front_room_2") is None
 
 
 async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> None:

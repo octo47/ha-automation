@@ -76,14 +76,12 @@ A room needs at least one valve, so the Back Room room is added only after the o
 which valve the Back Room Better Thermostat entry drives. A room whose only valve is `unavailable`
 holds its valves closed and reports degraded, so an unconfirmed valve heats nothing.
 
-### Entity ids of the second entry
+### Entity ids of a second entry
 
-Both entries create a device named `Room Climate <Room Name>`, and both create the house device
-`Room Climate`. Home Assistant suffixes the entity ids of the second entry with `_2`, so the
-second entry produces `climate.room_climate_front_room_2`, `sensor.room_climate_status_2` and the
-rest. Add the real entry first, or remove the bench entry before adding it, so the real house
-owns the plain entity ids of the spec's sections 7.1 to 7.3, which are the ids in the two
-dashboard views and in the card table.
+Every device name starts with the house name, so the entity ids follow the entry title. Title
+the bench entry `Room Climate Bench` and it yields `climate.room_climate_bench_front_room`, while the
+real entry keeps `climate.room_climate_front_room`. No id gains a numeric suffix, and the order in
+which the two entries are added does not matter.
 
 ## The feed-scale confirmation
 
