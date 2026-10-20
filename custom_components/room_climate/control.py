@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from .const import MAX_PLAUSIBLE_TEMPERATURE, MIN_PLAUSIBLE_TEMPERATURE
-from .models import TemperatureSource
+from .models import RoomConfig, TemperatureSource
 
 
 def _plausible(value: float | None) -> bool:
@@ -63,3 +63,24 @@ def next_lockout(active: bool, outdoor: float | None, threshold: float, hysteres
     if active:
         return outdoor > threshold - hysteresis
     return outdoor >= threshold
+
+
+def next_calling(
+    previous: bool,
+    room: RoomConfig,
+    target: float | None,
+    hvac_mode: str,
+    temperature: float | None,
+    window_open: bool,
+    fallback_demand: bool,
+) -> bool:
+    """Return the demand state of one room for the next cycle."""
+    if hvac_mode != "heat" or target is None or target <= room.min_temp:
+        return False
+    if window_open:
+        return False
+    if temperature is None:
+        return fallback_demand
+    if previous:
+        return temperature <= target + room.hysteresis
+    return temperature < target - room.hysteresis
