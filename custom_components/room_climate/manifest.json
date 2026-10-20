@@ -1,0 +1,13 @@
+{
+  "domain": "room_climate",
+  "name": "Room Climate",
+  "version": "0.1.0",
+  "documentation": "https://github.com/octo47/ha-automation",
+  "issue_tracker": "https://github.com/octo47/ha-automation/issues",
+  "codeowners": ["@octo47"],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "requirements": ["pydantic>=2.11,<3"],
+  "loggers": ["custom_components.room_climate"]
+}

@@ -44,6 +44,10 @@ Copy these rules into every task brief. They come from the spec and from the rep
   `min_on_seconds` 300, `min_off_seconds` 300, `update_interval_seconds` 30, `hysteresis` 0.2,
   `off_setpoint` 5.0, `valve_command_interval_seconds` 300, `calibration_scale` 100,
   `open_offset` 2.0, `ema_seconds` 1800, `dry_run` true.
+- Markdown that carries Python code blocks is excluded from the formatter through
+  `extend-exclude = ["*.md"]`. Ruff parses those blocks, and its rewrite can be invalid Python
+  (measured: it turned `except (TypeError, ValueError):` into `except TypeError, ValueError:`).
+  Never remove that exclusion to make `make lint` pass.
 - The domain is `room_climate`. The manifest requires `"version"`, because HACS updates a
   custom integration by the version.
 - The manifest declares `requirements: ["pydantic>=2.11,<3"]` and no custom integration.
@@ -73,8 +77,9 @@ These inputs are not in the spec's tables. Each one has a test in the task that 
 2. A room whose sources are all unusable must not call for heat, must hold its valves at
    `off_setpoint`, and must report `degraded` — unless a `demand_fallback_sensors` entity is
    `on`, which is the one case that calls without a temperature.
-3. A valve that is `unavailable` must not raise, and the other valves of the room must still
-   receive the target.
+3. A valve that is `unavailable` must not raise, the other valves of the room must still
+   receive the target, and the room must report degraded. A room with no available valve
+   must not demand the boiler.
 4. A window sensor in the state `open` must suspend the demand at once, and the valve of the
    room must move to `off_setpoint` without waiting for the command interval.
 5. A boiler command that the timing guard defers must not be sent, and a lockout or a master
@@ -89,11 +94,14 @@ These inputs are not in the spec's tables. Each one has a test in the task that 
 
 ### Task 1: Repository scaffold, import guard and licence
 
+`tests/__init__.py` makes the test directory a package, so a later test file can import a helper
+from another test file with `from .test_coordinator import setup_entry`.
+
 **Files:**
 - Create: `pyproject.toml`, `Makefile`, `.gitignore`, `hacs.json`, `LICENSE`
 - Create: `custom_components/room_climate/__init__.py`, `const.py`, `manifest.json`
 - Create: `custom_components/room_climate/translations/en.json`
-- Create: `tests/conftest.py`, `tests/test_package_layout.py`
+- Create: `tests/__init__.py`, `tests/conftest.py`, `tests/test_package_layout.py`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -251,27 +259,38 @@ STATUS_DISABLED = "disabled"
 STATUS_DRY_RUN = "dry_run"
 STATUS_DEGRADED = "degraded"
 
+CONF_SIMULATION = "simulation"
+
 SERVICE_RECOMPUTE = "recompute"
 ```
 
 ```toml
-# pyproject.toml (excerpt)
+# pyproject.toml
 [project]
 name = "ha-room-climate"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14.2"
 
 [dependency-groups]
 dev = [
   "pytest",
   "pytest-asyncio",
-  "pytest-homeassistant-custom-component",
+  "pytest-homeassistant-custom-component==0.13.372",
   "ruff",
   "pyright",
 ]
 
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
 [tool.ruff]
 line-length = 100
+extend-exclude = ["*.md"]
 
 [tool.pyright]
 include = ["custom_components/room_climate"]
@@ -362,6 +381,18 @@ def test_a_room_keeps_its_valves_and_weights() -> None:
 def test_weight_must_be_positive(weight: float) -> None:
     with pytest.raises(ValidationError):
         TemperatureSource(entity_id="sensor.a", weight=weight)
+
+
+def test_a_room_id_is_a_slug() -> None:
+    with pytest.raises(ValidationError):
+        room("Front Room Room")
+
+
+def test_house_rejects_two_rooms_with_one_room_id() -> None:
+    other = room("front_room", name="Front Room Two", valves=("climate.trv_other",))
+    with pytest.raises(ValidationError) as error:
+        house(rooms=(room(), other))
+    assert "room_id front_room" in str(error.value)
 
 
 def test_a_room_needs_one_valve_and_one_source() -> None:
@@ -524,7 +555,7 @@ class RoomConfig(BaseModel):
 
     model_config = FROZEN
 
-    room_id: str = Field(min_length=1)
+    room_id: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
     name: str = Field(min_length=1)
     valves: tuple[str, ...] = Field(min_length=1)
     sources: tuple[TemperatureSource, ...] = Field(min_length=1)
@@ -593,14 +624,16 @@ class HouseConfig(BaseModel):
             ):
                 if SIM_MARKER not in entity_id:
                     raise ValueError(f"a simulated house cannot name {entity_id}")
+        room_ids: dict[str, str] = {}
+        for room in self.rooms:
+            owner = room_ids.get(room.room_id)
+            if owner is not None:
+                raise ValueError(f"room_id {room.room_id} is used by {owner} and {room.name}")
+            room_ids[room.room_id] = room.name
         seen: dict[str, str] = {}
         for room in self.rooms:
-            for entity_id in (room.room_id, *room.valves):
+            for entity_id in (*room.valves, *(source.entity_id for source in room.sources)):
                 self._claim(seen, entity_id, room.name)
-        seen = {}
-        for room in self.rooms:
-            for source in room.sources:
-                self._claim(seen, source.entity_id, room.name)
         return self
 
     @staticmethod
@@ -643,6 +676,7 @@ class ControlInput(BaseModel):
     last_actuator_targets: Mapping[str, float]
     last_calibration_values: Mapping[str, float]
     last_command_at: Mapping[str, datetime]
+    valve_available: Mapping[str, bool] = Field(default_factory=dict)
     outdoor_lockout_active: bool
     boiler_on: bool
     boiler_state_since: datetime | None
@@ -662,6 +696,7 @@ class RoomCommand(BaseModel):
     ema_temperature: float | None
     usable_sources: int
     degraded: bool
+    valves_unavailable: int = 0
     valve_targets: Mapping[str, float]
     calibration_values: Mapping[str, float]
 
@@ -692,7 +727,7 @@ class ControlOutput(BaseModel):
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_models.py -v`
-Expected: PASS, eleven tests.
+Expected: PASS, thirteen tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1030,7 +1065,7 @@ def next_calling(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_demand.py -v`
-Expected: PASS, thirteen tests.
+Expected: PASS, eleven tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1089,6 +1124,7 @@ def targets(config: RoomConfig, **overrides: object) -> dict[str, float]:
         "target": 21.0,
         "last_sent": {},
         "last_command_at": {},
+        "available": {},
         "now": NOW,
     }
     arguments.update(overrides)
@@ -1143,6 +1179,13 @@ def test_closing_a_valve_is_never_deferred() -> None:
     }
 
 
+def test_an_unavailable_valve_is_skipped_and_the_other_is_commanded() -> None:
+    config = room(valves=("climate.trv_left", "climate.trv_right"))
+    assert targets(config, target=22.0, available={"climate.trv_left": False}) == {
+        "climate.trv_right": 22.0
+    }
+
+
 def test_every_valve_of_the_room_receives_the_target() -> None:
     config = room(valves=("climate.trv_left", "climate.trv_right"))
     assert targets(config, target=22.0) == {
@@ -1176,6 +1219,7 @@ def valve_targets(
     room: RoomConfig,
     *,
     blocked: bool,
+    available: Mapping[str, bool],
     calling: bool,
     target: float | None,
     last_sent: Mapping[str, float],
@@ -1192,6 +1236,8 @@ def valve_targets(
     rounded = round_setpoint(min(max(wanted, room.min_temp), room.max_temp))
     commands: dict[str, float] = {}
     for entity_id in room.valves:
+        if available.get(entity_id) is False:
+            continue
         sent = last_sent.get(entity_id)
         if sent is not None and abs(sent - rounded) < REPEAT_THRESHOLD:
             continue
@@ -1206,7 +1252,7 @@ def valve_targets(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_valves.py -v`
-Expected: PASS, sixteen tests.
+Expected: PASS, fifteen tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1607,6 +1653,40 @@ def test_the_valve_demand_keeps_a_room_without_a_source_warm() -> None:
     assert output.boiler.turn_on is True
 
 
+def test_an_unavailable_valve_is_skipped_and_the_room_is_degraded() -> None:
+    output = decide(payload(valve_available={"climate.trv_front_room": False}))
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.degraded is True
+    assert front_room.valves_unavailable == 1
+    assert front_room.valve_targets == {}
+    assert front_room.calling is False
+    assert output.boiler.turn_on is False
+
+
+def test_an_unavailable_valve_leaves_the_other_valve_of_the_room_commanded() -> None:
+    config = house(rooms=(room("front_room", valves=("climate.trv_left", "climate.trv_right")),))
+    output = decide(payload(house=config, valve_available={"climate.trv_left": False}))
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.valve_targets == {"climate.trv_right": 21.0}
+    assert front_room.degraded is True
+    assert front_room.calling is True
+
+
+def test_a_room_without_a_temperature_closes_its_valves_in_modulate_mode() -> None:
+    output = decide(
+        payload(
+            temperatures={
+                "sensor.front_room_temperature": None,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            }
+        )
+    )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.calling is False
+    assert front_room.valve_targets == {"climate.trv_front_room": 5.0}
+
+
 def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
     output = decide(payload())
     assert output.house_ema_temperature == pytest.approx(20.5)
@@ -1614,7 +1694,7 @@ def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
 
 @pytest.mark.parametrize(
     ("previous", "value", "elapsed", "expected"),
-    [(None, 21.0, 30.0, 21.0), (20.0, 22.0, 0.0, 22.0), (20.0, 22.0, 1800.0, 20.0 + (1 - 0.36787944117))],
+    [(None, 21.0, 30.0, 21.0), (20.0, 22.0, 0.0, 22.0), (20.0, 22.0, 1800.0, 20.0 + 2 * (1 - 0.36787944117))],
 )
 def test_the_graph_average(previous: float | None, value: float, elapsed: float, expected: float) -> None:
     result = exponential_average(previous, value, elapsed, 1800.0)
@@ -1663,13 +1743,16 @@ def _is_fallback_demand(payload: ControlInput, room: RoomConfig) -> bool:
     return any(payload.valve_demands.get(entity_id) is True for entity_id in room.demand_fallback_sensors)
 
 
-def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool) -> RoomCommand:
+def _room_command(
+    payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool
+) -> RoomCommand:
+    """Return the commands and the reported state of one room."""
     temperature = weighted_temperature(room.sources, payload.temperatures)
     usable = usable_source_count(room.sources, payload.temperatures)
-    window_open = any(
-        payload.window_states.get(entity_id) in WINDOW_OPEN_STATES
-        for entity_id in room.window_sensors
-    )
+    window_open = _window_open(payload, room)
+    unavailable_valves = [
+        entity_id for entity_id in room.valves if payload.valve_available.get(entity_id) is False
+    ]
     calling = next_calling(
         runtime.calling,
         room,
@@ -1679,11 +1762,16 @@ def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom,
         window_open,
         _is_fallback_demand(payload, room),
     )
+    calling = calling and len(unavailable_valves) < len(room.valves)
     elapsed = (
-        (payload.now - runtime.updated_at).total_seconds() if runtime.updated_at is not None else 0.0
+        (payload.now - runtime.updated_at).total_seconds()
+        if runtime.updated_at is not None
+        else 0.0
     )
     ema = (
-        exponential_average(runtime.ema_temperature, temperature, elapsed, payload.house.ema_seconds)
+        exponential_average(
+            runtime.ema_temperature, temperature, elapsed, payload.house.ema_seconds
+        )
         if temperature is not None
         else runtime.ema_temperature
     )
@@ -1694,19 +1782,22 @@ def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom,
         room_temperature=temperature,
         ema_temperature=ema,
         usable_sources=usable,
-        degraded=usable == 0,
+        degraded=usable == 0 or bool(unavailable_valves),
+        valves_unavailable=len(unavailable_valves),
         valve_targets=valve_targets(
             room,
-            blocked=blocked or window_open or runtime.hvac_mode == "off",
+            blocked=blocked
+            or window_open
+            or runtime.hvac_mode == "off"
+            or (temperature is None and not calling),
+            available=payload.valve_available,
             calling=calling,
             target=runtime.target_temperature,
             last_sent=payload.last_actuator_targets,
             last_command_at=payload.last_command_at,
             now=payload.now,
         ),
-        calibration_values=calibration_values(
-            room, temperature, payload.last_calibration_values
-        ),
+        calibration_values=calibration_values(room, temperature, payload.last_calibration_values),
     )
 
 
@@ -1782,7 +1873,7 @@ def _status(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_decide.py -v`
-Expected: PASS, sixteen tests.
+Expected: PASS, twenty tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1800,9 +1891,27 @@ git commit -m "add the cycle decision"
 - Modify: `custom_components/room_climate/__init__.py`
 - Test: `tests/test_coordinator.py`
 
+The coordinator's tests drive a cycle through the coordinator itself: the virtual climate entity
+arrives in Task 10, and the `room_climate.recompute` service arrives in Task 12. The service-based
+test of the service lives in Task 12.
+
+Facts of Home Assistant 2026.10.1 that shape this task, measured while it was built:
+
+1. `config_flow.py` must import for an entry to set up, so Task 9 ships a config flow with no
+   steps. Task 11 fills the flows in.
+2. `ConfigEntry` has no `async_add_listener` and no `async_update_listeners` in this version,
+   so the coordinator carries its own listener registry.
+3. `hass.services.async_calls()` does not exist. The tests record service calls from the
+   `EVENT_CALL_SERVICE` bus event, through `calls()` and `calls_for()`.
+4. A test that lets the coordinator command a service must load the service domain first, or
+   `async_call` raises `ServiceNotFound`.
+5. The platform forward joins in Task 10, because the platform modules do not exist in Task 9.
+6. The interval records a modulating command only, so the close of the first cycle does not
+   delay the opening command of the next one.
+
 **Interfaces:**
 - Consumes: `decide`, `HouseConfig.from_options`, `ControlOutput`.
-- Produces: `RoomClimateCoordinator(hass, entry, config)` with the attributes `config`,
+- Produces: `RoomClimateCoordinator(hass, entry, config)`, stored on `entry.runtime_data`, with the attributes `config`,
   `output`, `runtimes`, `last_actuator_targets`, `last_calibration_values`,
   `last_command_at`, `master_enabled`, `override_active`, and the methods
   `async_start()`, `async_stop()`, `async_recompute()`, `async_release_boiler()`. The `data`
@@ -1811,17 +1920,65 @@ git commit -m "add the cycle decision"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_coordinator.py
 """The coordinator reads states, decides, and applies the commands."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from collections.abc import Callable
+from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    ATTR_DOMAIN,
+    ATTR_SERVICE,
+    ATTR_SERVICE_DATA,
+    EVENT_CALL_SERVICE,
+)
+from homeassistant.core import Event, HomeAssistant
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
+from custom_components.room_climate.models import RuntimeRoom
+
+SERVICE_DOMAINS = ("climate", "number", "switch")
+
+RECORDED: dict[HomeAssistant, list[dict[str, Any]]] = {}
+
+
+async def enable_services(hass: HomeAssistant) -> None:
+    """Load the service domains the coordinator commands, and record every call."""
+    for domain in SERVICE_DOMAINS:
+        await async_setup_component(hass, domain, {})
+    RECORDED[hass] = []
+    hass.bus.async_listen(EVENT_CALL_SERVICE, _recorder(hass))
+
+
+def _recorder(hass: HomeAssistant) -> Callable[[Event[Any]], None]:
+    """Return a listener that appends every service call of one instance."""
+    calls = RECORDED[hass]
+
+    def record(event: Event[Any]) -> None:
+        calls.append(dict(event.data))
+
+    return record
+
+
+def calls(hass: HomeAssistant, domain: str, service: str) -> list[dict[str, Any]]:
+    """Return the service data of every recorded call of one service."""
+    return [
+        dict(record[ATTR_SERVICE_DATA])
+        for record in RECORDED.get(hass, [])
+        if record.get(ATTR_DOMAIN) == domain and record.get(ATTR_SERVICE) == service
+    ]
+
+
+def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict[str, Any]]:
+    """Return the recorded climate service calls that name one entity."""
+    return [
+        service_data
+        for service_data in calls(hass, "climate", service)
+        if service_data.get("entity_id") == entity_id
+    ]
 
 
 def options(**overrides: object) -> dict[str, object]:
@@ -1842,6 +1999,7 @@ def options(**overrides: object) -> dict[str, object]:
 
 
 async def setup_entry(hass: HomeAssistant, **overrides: object) -> MockConfigEntry:
+    await enable_services(hass)
     entry = MockConfigEntry(domain=DOMAIN, title="Room Climate", options=options(**overrides))
     entry.add_to_hass(hass)
     hass.states.async_set("sensor.front_room_temperature", "20.0")
@@ -1854,19 +2012,18 @@ async def setup_entry(hass: HomeAssistant, **overrides: object) -> MockConfigEnt
     return entry
 
 
-def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict]:
-    return [
-        dict(call.data)
-        for call in hass.services.async_calls("climate", service)
-        if call.data.get("entity_id") == entity_id
-    ]
+async def set_room_target(entry: MockConfigEntry, room_id: str, temperature: float) -> None:
+    """Set the setpoint of one room through the coordinator, without the climate entity."""
+    coordinator = entry.runtime_data
+    coordinator.runtimes[room_id] = RuntimeRoom(
+        room_id=room_id, target_temperature=temperature, hvac_mode="heat"
+    )
+    await coordinator.async_recompute()
 
 
 async def test_a_call_for_heat_commands_the_valve_and_the_boiler(hass: HomeAssistant) -> None:
     entry = await setup_entry(hass, dry_run=False)
-    await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
-    )
+    await set_room_target(entry, "front_room", 21.0)
     await hass.async_block_till_done()
 
     boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
@@ -1880,20 +2037,22 @@ async def test_a_call_for_heat_commands_the_valve_and_the_boiler(hass: HomeAssis
 
 async def test_the_calibration_feed_is_written(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=False)
-    writes = hass.services.async_calls("number", "set_value")
-    assert any(call.data.get("value") == 2000 for call in writes)
+    writes = calls(hass, "number", "set_value")
+    assert any(call.get("value") == 2000 for call in writes)
 
 
 async def test_dry_run_sends_no_command(hass: HomeAssistant) -> None:
-    await setup_entry(hass, dry_run=True)
-    with patch("homeassistant.core.ServiceRegistry.async_call", new=AsyncMock()) as call:
-        await hass.services.async_call("room_climate", "recompute", {})
-        await hass.async_block_till_done()
-    assert not [item for item in call.await_args_list if item.args[:1] == ("climate",)]
-    assert not [item for item in call.await_args_list if item.args[:1] == ("number",)]
+    entry = await setup_entry(hass, dry_run=True)
+    await set_room_target(entry, "front_room", 21.0)
+    await hass.async_block_till_done()
+    assert calls_for(hass, "set_temperature", "climate.trv_front_room") == []
+    assert calls_for(hass, "set_temperature", "climate.heating_heat") == []
+    assert calls(hass, "number", "set_value") == []
+    assert entry.runtime_data.output is not None
 
 
 async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssistant) -> None:
+    await enable_services(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Room Climate",
@@ -1916,13 +2075,10 @@ async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssi
     hass.states.async_set("climate.trv_side_room_b", "heat", {"temperature": 5.0})
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    await hass.services.async_call(
-        "climate",
-        "set_temperature",
-        {"entity_id": "climate.room_climate_side_room", "temperature": 21.0},
-    )
+    await set_room_target(entry, "side_room", 21.0)
     await hass.async_block_till_done()
     assert calls_for(hass, "set_temperature", "climate.trv_side_room_b")
+    assert calls_for(hass, "set_temperature", "climate.trv_side_room_a") == []
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -2041,6 +2197,13 @@ class RoomClimateCoordinator:
             )
             if (state := self.hass.states.get(entity_id)) is not None
         }
+        valve_available = {
+            entity_id: state is not None and state.state != "unavailable"
+            for entity_id in (
+                valve for room in self.config.rooms for valve in room.valves
+            )
+            if (state := self.hass.states.get(entity_id)) is not None
+        }
         outdoor = outdoor_temperature(self.config.outdoor_sources, temperatures)
         self.lockout_active = next_lockout(
             self.lockout_active,
@@ -2053,6 +2216,7 @@ class RoomClimateCoordinator:
             house=self.config,
             temperatures=temperatures,
             valve_demands=valve_demands,
+            valve_available=valve_available,
             window_states=window_states,
             runtimes=tuple(self.runtimes.values()),
             last_actuator_targets=self.last_actuator_targets,
@@ -2192,17 +2356,18 @@ git commit -m "add the room climate coordinator"
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_platforms.py
 """The entities the operator sees and the Scheduler commands."""
 
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 
-from .test_coordinator import setup_entry
+from .test_coordinator import calls, setup_entry
 
 
-async def test_the_virtual_thermostat_reports_the_weighted_temperature(hass: HomeAssistant) -> None:
+async def test_the_virtual_thermostat_reports_the_weighted_temperature(
+    hass: HomeAssistant,
+) -> None:
     await setup_entry(hass, dry_run=True)
     state = hass.states.get("climate.room_climate_front_room")
     assert state is not None
@@ -2215,7 +2380,9 @@ async def test_the_virtual_thermostat_reports_the_weighted_temperature(hass: Hom
 async def test_the_scheduler_sets_the_setpoint_and_the_room_calls(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=True)
     await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_front_room", "temperature": 21.0},
     )
     await hass.async_block_till_done()
     state = hass.states.get("climate.room_climate_front_room")
@@ -2243,7 +2410,9 @@ async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
 async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=False)
     await hass.services.async_call(
-        "climate", "set_temperature", {"entity_id": "climate.room_climate_front_room", "temperature": 21.0}
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_front_room", "temperature": 21.0},
     )
     await hass.async_block_till_done()
     await hass.services.async_call(
@@ -2251,9 +2420,9 @@ async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> Non
     )
     await hass.async_block_till_done()
     boiler = [
-        dict(call.data)
-        for call in hass.services.async_calls("climate", "set_temperature")
-        if call.data.get("entity_id") == "climate.heating_heat"
+        call
+        for call in calls(hass, "climate", "set_temperature")
+        if call.get("entity_id") == "climate.heating_heat"
     ]
     assert boiler[-1]["temperature"] == 15.0
     assert boiler[-1]["hvac_mode"] == "off"
@@ -2414,6 +2583,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import area_registry, device_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
@@ -2451,6 +2621,35 @@ async def test_a_room_needs_a_valve_and_a_source(hass: HomeAssistant) -> None:
     assert result["errors"]
 
 
+async def test_a_room_device_lands_in_its_area(hass: HomeAssistant) -> None:
+    area = area_registry.async_get(hass).async_get_or_create("Front Room")
+    entry = MockConfigEntry(domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]})
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "add_room"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "room_id": "front_room",
+            "name": "Front Room",
+            "area_id": area.id,
+            "valves": ["climate.trv_front_room"],
+            "sources": [{"entity_id": "sensor.front_room"}],
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    devices = [device for device in device_registry.async_get(hass).devices]
+    front_room = [device for device in devices if "front_room" in (device.name or "").lower()]
+    assert front_room and front_room[0].area_id == area.id
+
+
 async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]})
     entry.add_to_hass(hass)
@@ -2466,7 +2665,7 @@ async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
     )
     result = await hass.config_entries.options.async_configure(result["flow_id"], room)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    entry.options = result["data"]
+    await hass.config_entries.async_update_entry(entry, options=result["data"])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
@@ -2487,9 +2686,16 @@ Expected: FAIL, because the domain has no flow handler.
 
 - [ ] **Step 3: Write the flows**
 
-The user step collects the house fields with `vol.Schema` selectors: `EntitySelector` with
-`domain="climate"` for the boiler, `EntitySelector` with `device_class="temperature"` for the
-outdoor sources, `NumberSelector` for the thresholds, and `BooleanSelector` for `dry_run`. The
+The room form derives `room_id` from the name with `slugify` and never asks for it, because a
+room id must be a slug for the simulation entity ids to be valid.
+
+The user step collects the house fields with schemas from `probatio`, which is the schema library
+this Home Assistant version uses: `EntitySelector` with `domain="climate"` for the boiler,
+`EntitySelector` with `device_class="temperature"` for the outdoor sources, `NumberSelector` for
+the thresholds, and `BooleanSelector` for `dry_run`. Import `probatio` and not `voluptuous`: both
+packages are installed, and the type of the second one does not match the schema the services
+accept. A small typed helper resolves a selector class by name, because a selector class carries
+an unresolved generic under the strict profile. The
 options flow uses `OptionsFlowWithConfigEntry`, a `menu` step, and one form per room. The room
 form collects `valves` and `sources` with `EntitySelector(multiple=True)`, `calibration`,
 `calibration_scale`, `valve_mode`, `open_offset`, the temperature limits, `hysteresis`,
@@ -2498,10 +2704,20 @@ form collects `valves` and `sources` with `EntitySelector(multiple=True)`, `cali
 room list plus the new room, and it maps `ValidationError` to the errors `shared_entity` and
 `invalid_room`.
 
+The flow also assigns the device of a room to the area of the room. It reads the device
+registry, finds the device whose identifier is the room, and calls
+`async_update_device(device_id, area_id=room.area_id)`. The area dashboard and the room cards
+depend on it. `DeviceInfo.suggested_area` cannot do the job: this Home Assistant version treats
+it as a runtime-only attribute, and it takes an area name rather than an id.
+
+The room device exists only after the platforms of the entry are set up, so the options flow
+writes the options, awaits `hass.config_entries.async_reload(entry_id)`, and assigns the areas
+after that reload.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_config_flow.py -v`
-Expected: PASS, three tests.
+Expected: PASS, four tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2535,7 +2751,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 
-from .test_coordinator import setup_entry
+from .test_coordinator import calls_for, setup_entry
 
 
 async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
@@ -2548,13 +2764,18 @@ async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
-    boiler = [
-        dict(call.data)
-        for call in hass.services.async_calls("climate", "set_temperature")
-        if call.data.get("entity_id") == "climate.heating_heat"
-    ]
+    boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
     assert boiler[-1]["temperature"] == 15.0
     assert boiler[-1]["hvac_mode"] == "off"
+
+
+async def test_diagnostics_carry_the_config_and_the_last_cycle(hass: HomeAssistant) -> None:
+    entry = await setup_entry(hass, dry_run=True)
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)  # type: ignore[arg-type]
+    assert diagnostics["config"]["rooms"][0]["room_id"] == "front_room"
+    assert "climate.heating_heat" in diagnostics["watched_entities"]
+    assert diagnostics["output"] is not None
+    assert json.loads(json.dumps(diagnostics))["boiler_on"] is False
 
 
 async def test_recompute_runs_one_cycle(hass: HomeAssistant) -> None:
@@ -2568,21 +2789,26 @@ async def test_recompute_runs_one_cycle(hass: HomeAssistant) -> None:
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_unload.py -v`
-Expected: FAIL, because unload sends no boiler command.
+Expected: PASS for the boiler release, because Task 9 already releases it on unload, and FAIL for
+the service and for the diagnostics, which this task adds.
 
 - [ ] **Step 3: Write the release path, the service and the diagnostics**
 
-`async_unload_entry` stops the coordinator, calls `coordinator.async_release_boiler()`, then
+`async_unload_entry` stops the coordinator, releases the boiler, unloads the four platforms and
+removes the service when the last entry goes away. The release already exists, so this task adds
+the service, the removal path and the service lifetime: a reload runs the unload path too, so
+`async_setup_entry` registers the service as well, and only the last loaded entry removes it.
 unloads the four platforms and removes the service when the last entry goes away.
 `async_remove_entry` releases the boiler as well. `async_setup` registers
 `room_climate.recompute` with no fields and one handler per loaded entry.
-`diagnostics.py` returns the config model dump, the last `ControlOutput`, the watched entities
+`diagnostics.py` returns the config model dump, the last `ControlOutput`, the watched entities,
+the boiler transitions and the timestamps of the last valve commands. A test asserts the payload
 and the timestamps of the boiler transitions.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_unload.py -v`
-Expected: PASS, two tests.
+Expected: PASS, three tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2620,7 +2846,6 @@ outdoor temperature. The entity classes live only in `sim.py`.
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_sim.py
 """The bench: virtual valves, a virtual boiler and the knobs."""
 
 from __future__ import annotations
@@ -2648,6 +2873,8 @@ def sim_options(**overrides: object) -> dict[str, object]:
         "boiler_entity": "climate.sim_boiler",
         "outdoor_sources": ["number.sim_outdoor_temperature"],
         "dry_run": False,
+        "min_on_seconds": 0,
+        "min_off_seconds": 0,
         "rooms": [bench_room()],
     }
     payload.update(overrides)
@@ -2665,9 +2892,7 @@ async def setup_bench(hass: HomeAssistant, **overrides: object) -> MockConfigEnt
 
 
 async def set_number(hass: HomeAssistant, entity_id: str, value: float) -> None:
-    await hass.services.async_call(
-        "number", "set_value", {"entity_id": entity_id, "value": value}
-    )
+    await hass.services.async_call("number", "set_value", {"entity_id": entity_id, "value": value})
     await hass.async_block_till_done()
 
 
@@ -2763,6 +2988,19 @@ async def test_an_offline_valve_reports_unavailable(hass: HomeAssistant) -> None
     await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
     await hass.async_block_till_done()
     assert hass.states.get("climate.sim_front_room_valve").state == "unavailable"
+
+
+async def test_an_offline_room_takes_its_knobs_and_sensors_away(hass: HomeAssistant) -> None:
+    await setup_bench(hass)
+    await hass.services.async_call("switch", "turn_on", {"entity_id": "switch.sim_front_room_offline"})
+    await hass.async_block_till_done()
+    for entity_id in (
+        "number.sim_front_room_valve_local_temperature",
+        "number.sim_front_room_valve_external_measured_room_sensor",
+        "sensor.sim_front_room_valve_position",
+        "binary_sensor.sim_front_room_heat_required",
+    ):
+        assert hass.states.get(entity_id).state == "unavailable", entity_id
 
 
 async def test_an_open_window_closes_the_valve(hass: HomeAssistant) -> None:
@@ -3129,6 +3367,26 @@ plus `SimSwitchEntity(f"{SIM_MARKER}{room.room_id}_window", ...)` and `..._offli
 `switch.py`, `SimBoilerFiringBinary()` in `binary_sensor.py`, and the position sensors in
 `sensor.py`. `number.py` is a new platform, so `PLATFORMS` gains `Platform.NUMBER`.
 
+
+As built, and why the module differs from the block above:
+
+1. `SimNumberEntity` takes `minimum`, `maximum`, `step`, `device_class` and `unit`. The three
+   temperature knobs use 5 to 35 °C with a step of 0.1. The feed knob uses −8000 to 3500 with a
+   step of 1 and no device class, which is the range of the real feed entity.
+2. The knobs are named so their entity ids match the specification: `..._valve_local_temperature`
+   and `..._valve_external_measured_room_sensor`. A shorter name yields
+   `number.sim_front_room_external_sensor`, which is not the id of section 7.4.
+3. State comes through `_attr_*` values that a watched state change recomputes, because pyright
+   strict rejects a plain property that overrides a cached property of Home Assistant.
+4. `_SimEntity` watches the offline knob of its room and refreshes its availability, so a flip of
+   `switch.sim_<room>_offline` reaches the valve, its knobs and its sensors.
+5. Unique ids carry the entry id, so a simulated entry and a real entry can both hold a room
+   called `front_room`.
+6. Both climate entities set `_attr_temperature_unit`, without which the entity raises at add
+   time.
+7. The bench options set `min_on_seconds` and `min_off_seconds` to 0, so a knob flip releases the
+   boiler at once.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_sim.py -v`
@@ -3171,8 +3429,9 @@ Expected: FAIL with `KeyError: 'name'`, because `hacs.json` has no `name` field 
    the eight dashboard cards that change.
 3. Write `dashboard/room-climate.yaml` with one thermostat card per room, the house panel and
    one history graph per room.
-4. Write `docs/room-heating.runbook.md` with the fourteen steps of the spec's section 8, the
-   rollback steps, and the feed-scale confirmation of steps 6 and 7 as its own section.
+4. Write `docs/room-heating.runbook.md` with both phases of the spec's section 8, the rollback
+   steps, and the feed-scale confirmation of section 8.2 step 3 as its own section. Phase A
+   must state that the bench holds `min_on_seconds` and `min_off_seconds` at 0.
 5. Write `scripts/probe_live.py`. It reads the token from `~/.hermes/ha_token`, prints the
    room climate entities with their attributes, the boiler state, the status sensor, and the
    current value of every feed entity.

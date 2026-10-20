@@ -1,0 +1,3 @@
+recompute:
+  name: Recompute
+  description: Run one control cycle of every loaded house.

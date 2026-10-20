@@ -252,7 +252,7 @@ one source that two rooms claim. That check needs every room at once.
 
 | Room field | Type | Default | Rule |
 | --- | --- | --- | --- |
-| `room_id` | slug | from the name | Unique in the entry. |
+| `room_id` | slug | from the name | Matches `^[a-z0-9_]+$`. Unique in the entry. |
 | `name` | string | — | Required. |
 | `area_id` | area id | none | Optional. The component assigns the device to this area. |
 | `valves` | list of entity ids, climate domain | — | One or more. |
@@ -277,6 +277,8 @@ Rules:
    Reason: the valve and the component must agree on the room temperature.
 3. A room with an empty `valves` list is invalid.
 4. The options flow rejects a broken rule and names the two rooms.
+5. `room_id` is a slug, because the simulation house of section 7.4 builds entity ids from
+   it. The room form derives the slug from the room name.
 
 ## 6. Control rules
 
@@ -301,6 +303,9 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
 6. Between those two values the room keeps its previous state.
 7. A window sensor of the room in the state `open` or `on` suspends the demand at once.
    The valve of a Hive TRV reports `open`, and a switch reports `on`.
+9. The room cannot call for heat when every valve of the room is `unavailable`. A room
+   with no working valve cannot deliver heat, so the boiler must not run for it. A valve
+   with no state at all counts as unavailable.
 8. When the room temperature is `None`, the room calls when at least one
    `demand_fallback_sensors` entity is in the state `on`. This rule keeps a room warm
    after a source fails. Rule 8 is the only case that calls without a temperature. The
@@ -318,13 +323,17 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
    room at `off_setpoint`.
 5. The component sends a command only when the wanted target differs from the last sent
    target by 0.25 °C or more.
-6. The component defers a due command while
+6. The component records the time of a modulating command only, so a close never delays the
+   next opening. The component defers a due command while
    `now − last_command_at < valve_command_interval_seconds`. A command to `off_setpoint`
    is never deferred. The valve motor and the Zigbee network both need the limit.
 7. A valve in the state `unavailable` does not stop the cycle. The component skips it,
    keeps the other valves of the room, and reports the room as degraded.
 8. The component sits outside the internal control loop of the valve. The valve owns its
    position.
+9. A room whose temperature is unknown and which does not call puts its valves at
+   `off_setpoint`, in both valve modes. The component cannot measure the room, so it stops
+   heating it. Rule 8 of section 6.2 is the one case that keeps such a room calling.
 
 ### 6.4 Calibration
 
@@ -396,13 +405,17 @@ One device per room, assigned to the configured area.
 
 Climate entity rules:
 
-1. `hvac_modes` are `off` and `heat`.
+1. The device of a room is named `<house name> <room name>`, and the entity ids follow it.
+   The house entry keeps the name `Room Climate`, so the room of the Front Room yields
+   `climate.room_climate_front_room`.
+2. `hvac_modes` are `off` and `heat`.
 2. `current_temperature` is the weighted room temperature.
 3. `target_temperature` is the setpoint. The entity restores it after a restart.
 4. `hvac_action` is `heating` when the room calls, and `idle` otherwise.
 5. The entity accepts `set_temperature` and `set_hvac_mode`.
 6. Attributes: the usable source count, the room temperature, the calling state, the
-   valve list, the valve targets, the calibration value, and the degradation flag.
+   valve list, the valve targets, the calibration value, the count of unavailable valves,
+   and the degradation flag.
 
 ### 7.2 House device: the config entry
 
@@ -497,8 +510,10 @@ Switch-over:
    names only `sim_` entities.
 2. The real entry takes the duty when the operator turns its `dry_run` off.
 3. Disable the simulated entry when the bench is no longer useful. Its entities go away.
-4. A second entry adds the suffix `_2` to the house entity ids, for example
-   `switch.room_climate_boiler_automation_2`.
+4. The house name and the room name build every device name, and the entity ids follow the
+   device name. Title the bench entry `Room Climate Bench`, and its entities carry the ids
+   `climate.room_climate_bench_front_room` and `switch.room_climate_bench_boiler_automation`. Two
+   entries with different titles therefore never compete for one entity id.
 
 ## 8. Install, migrate and roll back
 
@@ -510,7 +525,9 @@ valves.
 1. Open HACS, then Integrations.
 2. Add `octo47/ha-automation` as a custom repository of category Integration.
 3. Download Room Climate, then restart Home Assistant.
-4. Add the integration. Turn `simulation` on. Keep `dry_run` on.
+4. Add the integration. Turn `simulation` on and name the entry `Room Climate Bench`. Keep
+   `dry_run` on. Set `min_on_seconds` and `min_off_seconds` to 0, so every row of the table
+   below takes effect at once. Raise them later to watch the guard rules of section 6.5.
 5. Add one room per row of section 3.3. Give the room its name only, because the component
    derives the virtual valve and the virtual source.
 6. Read the computed commands in the log for one cycle.
@@ -520,7 +537,7 @@ valves.
 | Knob | Value | Expected |
 | --- | --- | --- |
 | `number.sim_front_room_room_temperature` | 19.0 | The room calls. The valve reaches the setpoint. The boiler reaches 31 with `hvac_action` heating. |
-| the same | 21.5 | The room stops. The boiler reaches 15 with mode `off`. |
+| the same | 21.5 | The room stops. The boiler reaches 15 with mode `off`, because the bench holds the minimum on time at 0. |
 | `number.sim_outdoor_temperature` | 19.0 | Status `locked_out`. The boiler at 15. The valves at `off_setpoint`. |
 | `switch.room_climate_lockout_override` | on | The lockout stops, and the room calls again. |
 | `switch.sim_front_room_window` | on | The demand stops, and the valve closes in the same cycle. |
@@ -535,7 +552,7 @@ Step 9 is the purpose of the bench. A parameter changes here, and no real valve 
 
 ### 8.2 Phase B: the real house
 
-1. Add a second entry, with `simulation` off. Fill the house form.
+1. Add a second entry, with `simulation` off, and keep the house name `Room Climate`.
 2. Add one room per radiator group, with the table of section 3.3.
 3. Confirm the scale of the feed entity on one valve. Write the value 2150 into
    `number.<trv>_external_measured_room_sensor`. Read the value back. Watch
