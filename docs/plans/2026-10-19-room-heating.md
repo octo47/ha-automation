@@ -259,6 +259,8 @@ STATUS_DISABLED = "disabled"
 STATUS_DRY_RUN = "dry_run"
 STATUS_DEGRADED = "degraded"
 
+CONF_SIMULATION = "simulation"
+
 SERVICE_RECOMPUTE = "recompute"
 ```
 
@@ -2581,7 +2583,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import device_registry
+from homeassistant.helpers import area_registry, device_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
@@ -2620,8 +2622,7 @@ async def test_a_room_needs_a_valve_and_a_source(hass: HomeAssistant) -> None:
 
 
 async def test_a_room_device_lands_in_its_area(hass: HomeAssistant) -> None:
-    hass.states.async_set("sensor.front_room", "20.0")
-    area = hass.areas.async_get_or_create("front_room_area", "Front Room")
+    area = area_registry.async_get(hass).async_get_or_create("Front Room")
     entry = MockConfigEntry(domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]})
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
@@ -2644,8 +2645,8 @@ async def test_a_room_device_lands_in_its_area(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
 
-    devices = device_registry.async_get(hass).devices
-    front_room = [device for device in devices.values() if "front_room" in (device.name or "").lower()]
+    devices = [device for device in device_registry.async_get(hass).devices]
+    front_room = [device for device in devices if "front_room" in (device.name or "").lower()]
     assert front_room and front_room[0].area_id == area.id
 
 
@@ -2664,7 +2665,7 @@ async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
     )
     result = await hass.config_entries.options.async_configure(result["flow_id"], room)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    entry.options = result["data"]
+    await hass.config_entries.async_update_entry(entry, options=result["data"])
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
@@ -2688,9 +2689,13 @@ Expected: FAIL, because the domain has no flow handler.
 The room form derives `room_id` from the name with `slugify` and never asks for it, because a
 room id must be a slug for the simulation entity ids to be valid.
 
-The user step collects the house fields with `vol.Schema` selectors: `EntitySelector` with
-`domain="climate"` for the boiler, `EntitySelector` with `device_class="temperature"` for the
-outdoor sources, `NumberSelector` for the thresholds, and `BooleanSelector` for `dry_run`. The
+The user step collects the house fields with schemas from `probatio`, which is the schema library
+this Home Assistant version uses: `EntitySelector` with `domain="climate"` for the boiler,
+`EntitySelector` with `device_class="temperature"` for the outdoor sources, `NumberSelector` for
+the thresholds, and `BooleanSelector` for `dry_run`. Import `probatio` and not `voluptuous`: both
+packages are installed, and the type of the second one does not match the schema the services
+accept. A small typed helper resolves a selector class by name, because a selector class carries
+an unresolved generic under the strict profile. The
 options flow uses `OptionsFlowWithConfigEntry`, a `menu` step, and one form per room. The room
 form collects `valves` and `sources` with `EntitySelector(multiple=True)`, `calibration`,
 `calibration_scale`, `valve_mode`, `open_offset`, the temperature limits, `hysteresis`,
@@ -2704,6 +2709,10 @@ registry, finds the device whose identifier is the room, and calls
 `async_update_device(device_id, area_id=room.area_id)`. The area dashboard and the room cards
 depend on it. `DeviceInfo.suggested_area` cannot do the job: this Home Assistant version treats
 it as a runtime-only attribute, and it takes an area name rather than an id.
+
+The room device exists only after the platforms of the entry are set up, so the options flow
+writes the options, awaits `hass.config_entries.async_reload(entry_id)`, and assigns the areas
+after that reload.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -2742,7 +2751,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 
-from .test_coordinator import calls, calls_for, setup_entry
+from .test_coordinator import calls_for, setup_entry
 
 
 async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
@@ -2760,6 +2769,15 @@ async def test_unload_releases_the_boiler(hass: HomeAssistant) -> None:
     assert boiler[-1]["hvac_mode"] == "off"
 
 
+async def test_diagnostics_carry_the_config_and_the_last_cycle(hass: HomeAssistant) -> None:
+    entry = await setup_entry(hass, dry_run=True)
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)  # type: ignore[arg-type]
+    assert diagnostics["config"]["rooms"][0]["room_id"] == "front_room"
+    assert "climate.heating_heat" in diagnostics["watched_entities"]
+    assert diagnostics["output"] is not None
+    assert json.loads(json.dumps(diagnostics))["boiler_on"] is False
+
+
 async def test_recompute_runs_one_cycle(hass: HomeAssistant) -> None:
     entry = await setup_entry(hass, dry_run=True)
     entry.runtime_data.output = None
@@ -2771,21 +2789,26 @@ async def test_recompute_runs_one_cycle(hass: HomeAssistant) -> None:
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `uv run pytest tests/test_unload.py -v`
-Expected: FAIL, because unload sends no boiler command.
+Expected: PASS for the boiler release, because Task 9 already releases it on unload, and FAIL for
+the service and for the diagnostics, which this task adds.
 
 - [ ] **Step 3: Write the release path, the service and the diagnostics**
 
-`async_unload_entry` stops the coordinator, calls `coordinator.async_release_boiler()`, then
+`async_unload_entry` stops the coordinator, releases the boiler, unloads the four platforms and
+removes the service when the last entry goes away. The release already exists, so this task adds
+the service, the removal path and the service lifetime: a reload runs the unload path too, so
+`async_setup_entry` registers the service as well, and only the last loaded entry removes it.
 unloads the four platforms and removes the service when the last entry goes away.
 `async_remove_entry` releases the boiler as well. `async_setup` registers
 `room_climate.recompute` with no fields and one handler per loaded entry.
-`diagnostics.py` returns the config model dump, the last `ControlOutput`, the watched entities
+`diagnostics.py` returns the config model dump, the last `ControlOutput`, the watched entities,
+the boiler transitions and the timestamps of the last valve commands. A test asserts the payload
 and the timestamps of the boiler transitions.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_unload.py -v`
-Expected: PASS, two tests.
+Expected: PASS, three tests.
 
 - [ ] **Step 5: Commit**
 

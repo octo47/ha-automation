@@ -44,6 +44,7 @@ from .const import (
     CONF_OUTDOOR_SOURCES,
     CONF_ROOM_ID,
     CONF_ROOMS,
+    CONF_SIMULATION,
     CONF_SOURCES,
     CONF_UPDATE_INTERVAL_SECONDS,
     CONF_VALVE_COMMAND_INTERVAL_SECONDS,
@@ -75,7 +76,6 @@ SOURCE_ENTITY = "entity_id"
 SOURCE_WEIGHT = "weight"
 
 # The simulation flag of the house model, which the house form offers.
-CONF_SIMULATION = "simulation"
 
 # The room form carries no room id, so the payload of a room is the fields of the model.
 ROOM_FIELDS = tuple(RoomConfig.model_fields)

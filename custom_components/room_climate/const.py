@@ -79,4 +79,6 @@ STATUS_DISABLED = "disabled"
 STATUS_DRY_RUN = "dry_run"
 STATUS_DEGRADED = "degraded"
 
+CONF_SIMULATION = "simulation"
+
 SERVICE_RECOMPUTE = "recompute"
