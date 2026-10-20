@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .const import (
     CALIBRATION_MAX_TEMPERATURE,
@@ -12,11 +13,30 @@ from .const import (
     CALIBRATION_TOLERANCE_C,
     MAX_PLAUSIBLE_TEMPERATURE,
     MIN_PLAUSIBLE_TEMPERATURE,
+    REASON_LOCKOUT,
+    REASON_MASTER_OFF,
+    REASON_NO_DEMAND,
+    REASON_ROOM_DEMAND,
     REPEAT_THRESHOLD,
     SETPOINT_STEP,
+    STATUS_DEGRADED,
+    STATUS_DISABLED,
+    STATUS_DRY_RUN,
+    STATUS_HEATING,
+    STATUS_IDLE,
+    STATUS_LOCKED_OUT,
     VALVE_MODE_MODULATE,
+    WINDOW_OPEN_STATES,
 )
-from .models import RoomConfig, TemperatureSource
+from .models import (
+    BoilerCommand,
+    ControlInput,
+    ControlOutput,
+    RoomCommand,
+    RoomConfig,
+    RuntimeRoom,
+    TemperatureSource,
+)
 
 FEED_SUFFIX = "_external_measured_room_sensor"
 
@@ -160,3 +180,152 @@ def calibration_values(
             continue
         writes[entity_id] = value
     return writes
+
+
+def exponential_average(
+    previous: float | None, value: float, elapsed_seconds: float, tau_seconds: float
+) -> float:
+    """Return the smoothed value, and the sample itself when no history exists."""
+    if previous is None or elapsed_seconds <= 0.0 or tau_seconds <= 0.0:
+        return value
+    alpha = 1.0 - math.exp(-elapsed_seconds / tau_seconds)
+    return previous + alpha * (value - previous)
+
+
+def _is_fallback_demand(payload: ControlInput, room: RoomConfig) -> bool:
+    """Return whether a demand fallback entity of the room reports heat."""
+    return any(
+        payload.valve_demands.get(entity_id) is True for entity_id in room.demand_fallback_sensors
+    )
+
+
+def _window_open(payload: ControlInput, room: RoomConfig) -> bool:
+    """Return whether a window sensor of the room reports an open window."""
+    for entity_id in room.window_sensors:
+        state = payload.window_states.get(entity_id)
+        if state is not None and state in WINDOW_OPEN_STATES:
+            return True
+    return False
+
+
+def _room_command(
+    payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool
+) -> RoomCommand:
+    """Return the commands and the reported state of one room."""
+    temperature = weighted_temperature(room.sources, payload.temperatures)
+    usable = usable_source_count(room.sources, payload.temperatures)
+    window_open = _window_open(payload, room)
+    calling = next_calling(
+        runtime.calling,
+        room,
+        runtime.target_temperature,
+        runtime.hvac_mode,
+        temperature,
+        window_open,
+        _is_fallback_demand(payload, room),
+    )
+    elapsed = (
+        (payload.now - runtime.updated_at).total_seconds()
+        if runtime.updated_at is not None
+        else 0.0
+    )
+    ema = (
+        exponential_average(
+            runtime.ema_temperature, temperature, elapsed, payload.house.ema_seconds
+        )
+        if temperature is not None
+        else runtime.ema_temperature
+    )
+    return RoomCommand(
+        room_id=room.room_id,
+        calling=calling,
+        window_open=window_open,
+        room_temperature=temperature,
+        ema_temperature=ema,
+        usable_sources=usable,
+        degraded=usable == 0,
+        valve_targets=valve_targets(
+            room,
+            blocked=blocked or window_open or runtime.hvac_mode == "off",
+            calling=calling,
+            target=runtime.target_temperature,
+            last_sent=payload.last_actuator_targets,
+            last_command_at=payload.last_command_at,
+            now=payload.now,
+        ),
+        calibration_values=calibration_values(room, temperature, payload.last_calibration_values),
+    )
+
+
+def decide(payload: ControlInput) -> ControlOutput:
+    """Return the commands of one cycle."""
+    lockout = payload.outdoor_lockout_active and not payload.override_active
+    blocked = lockout or not payload.master_enabled
+    runtimes = {room.room_id: room for room in payload.runtimes}
+    commands = tuple(
+        _room_command(
+            payload, room, runtimes.get(room.room_id, RuntimeRoom(room_id=room.room_id)), blocked
+        )
+        for room in payload.house.rooms
+    )
+    if not payload.master_enabled:
+        boiler = _boiler_command(False, REASON_MASTER_OFF, payload, immediate=True)
+    elif lockout:
+        boiler = _boiler_command(False, REASON_LOCKOUT, payload, immediate=True)
+    elif any(command.calling for command in commands):
+        boiler = _boiler_command(True, REASON_ROOM_DEMAND, payload)
+    else:
+        boiler = _boiler_command(False, REASON_NO_DEMAND, payload)
+    return ControlOutput(
+        rooms=commands,
+        boiler=boiler,
+        lockout_active=payload.outdoor_lockout_active,
+        outdoor_temperature=outdoor_temperature(
+            payload.house.outdoor_sources, payload.temperatures
+        ),
+        house_ema_temperature=_house_average(commands),
+        status=_status(payload, lockout, boiler, commands),
+    )
+
+
+def _house_average(commands: Sequence[RoomCommand]) -> float | None:
+    """Return the mean of the room averages, or None when no room has one."""
+    values = [
+        command.ema_temperature for command in commands if command.ema_temperature is not None
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _boiler_command(
+    turn_on: bool, reason: str, payload: ControlInput, immediate: bool = False
+) -> BoilerCommand:
+    """Return the boiler command, honouring the minimum on and off times."""
+    if turn_on == payload.boiler_on:
+        return BoilerCommand(turn_on=turn_on, reason=reason, send=False)
+    if immediate or payload.boiler_state_since is None:
+        return BoilerCommand(turn_on=turn_on, reason=reason, send=True)
+    limit = timedelta(
+        seconds=payload.house.min_off_seconds if turn_on else payload.house.min_on_seconds
+    )
+    return BoilerCommand(
+        turn_on=turn_on, reason=reason, send=payload.now - payload.boiler_state_since >= limit
+    )
+
+
+def _status(
+    payload: ControlInput, lockout: bool, boiler: BoilerCommand, commands: Sequence[RoomCommand]
+) -> str:
+    """Return the status of the house for this cycle."""
+    if not payload.master_enabled:
+        return STATUS_DISABLED
+    if lockout:
+        return STATUS_LOCKED_OUT
+    if payload.house.dry_run:
+        return STATUS_DRY_RUN
+    if commands and all(command.degraded for command in commands):
+        return STATUS_DEGRADED
+    if boiler.turn_on or payload.boiler_on:
+        return STATUS_HEATING
+    return STATUS_IDLE
