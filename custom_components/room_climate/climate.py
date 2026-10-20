@@ -20,6 +20,7 @@ from .const import DOMAIN
 from .coordinator import RoomClimateCoordinator
 from .entity import room_command, room_device
 from .models import RoomConfig, RuntimeRoom
+from .sim import SimBoilerEntity, SimValveEntity
 
 
 async def async_setup_entry(
@@ -27,9 +28,17 @@ async def async_setup_entry(
     entry: RoomClimateConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add one virtual thermostat per room of the entry."""
+    """Add one virtual thermostat per room, and the virtual valves of a bench."""
     coordinator = entry.runtime_data
-    async_add_entities(RoomClimateEntity(coordinator, room) for room in coordinator.config.rooms)
+    entities: list[ClimateEntity] = [
+        RoomClimateEntity(coordinator, room) for room in coordinator.config.rooms
+    ]
+    if coordinator.config.simulation:
+        entities.extend(
+            SimValveEntity(entry.entry_id, room.room_id) for room in coordinator.config.rooms
+        )
+        entities.append(SimBoilerEntity(entry.entry_id))
+    async_add_entities(entities)
 
 
 class RoomClimateEntity(RestoreEntity, ClimateEntity):

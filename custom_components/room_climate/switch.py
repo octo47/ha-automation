@@ -10,9 +10,10 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import RoomClimateConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, SIM_MARKER
 from .coordinator import RoomClimateCoordinator
 from .entity import house_device
+from .sim import SimSwitchEntity
 
 
 async def async_setup_entry(
@@ -20,9 +21,26 @@ async def async_setup_entry(
     entry: RoomClimateConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add the two switches of the house."""
+    """Add the two switches of the house, and the knobs of a bench."""
     coordinator = entry.runtime_data
-    async_add_entities((BoilerAutomationSwitch(coordinator), LockoutOverrideSwitch(coordinator)))
+    entities: list[SwitchEntity] = [
+        BoilerAutomationSwitch(coordinator),
+        LockoutOverrideSwitch(coordinator),
+    ]
+    if coordinator.config.simulation:
+        for room in coordinator.config.rooms:
+            label = room.room_id.replace("_", " ")
+            entities.append(
+                SimSwitchEntity(
+                    entry.entry_id, f"{SIM_MARKER}{room.room_id}_window", f"Sim {label} window"
+                )
+            )
+            entities.append(
+                SimSwitchEntity(
+                    entry.entry_id, f"{SIM_MARKER}{room.room_id}_offline", f"Sim {label} offline"
+                )
+            )
+    async_add_entities(entities)
 
 
 class HouseSwitch(SwitchEntity):

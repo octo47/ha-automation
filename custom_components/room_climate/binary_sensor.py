@@ -14,6 +14,7 @@ from .const import DOMAIN
 from .coordinator import RoomClimateCoordinator
 from .entity import house_device, room_command, room_device
 from .models import RoomConfig
+from .sim import SimBoilerFiringBinary, SimHeatRequiredBinary
 
 
 async def async_setup_entry(
@@ -21,13 +22,18 @@ async def async_setup_entry(
     entry: RoomClimateConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add the house signals and the demand latch of every room."""
+    """Add the house signals and the demand latch of every room, and the bench signals."""
     coordinator = entry.runtime_data
     entities: list[BinarySensorEntity] = [
         BoilerDemandSensor(coordinator),
         OutdoorLockoutSensor(coordinator),
     ]
     entities.extend(RoomCallingSensor(coordinator, room) for room in coordinator.config.rooms)
+    if coordinator.config.simulation:
+        entities.extend(
+            SimHeatRequiredBinary(entry.entry_id, room.room_id) for room in coordinator.config.rooms
+        )
+        entities.append(SimBoilerFiringBinary(entry.entry_id))
     async_add_entities(entities)
 
 

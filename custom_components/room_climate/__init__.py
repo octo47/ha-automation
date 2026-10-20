@@ -14,7 +14,13 @@ from .const import DOMAIN, SERVICE_RECOMPUTE
 from .coordinator import RoomClimateCoordinator
 from .models import HouseConfig
 
-PLATFORMS = (Platform.BINARY_SENSOR, Platform.CLIMATE, Platform.SENSOR, Platform.SWITCH)
+PLATFORMS = (
+    Platform.BINARY_SENSOR,
+    Platform.CLIMATE,
+    Platform.NUMBER,
+    Platform.SENSOR,
+    Platform.SWITCH,
+)
 
 RoomClimateConfigEntry = ConfigEntry[RoomClimateCoordinator]
 
