@@ -168,6 +168,7 @@ class ControlInput(BaseModel):
     last_actuator_targets: Mapping[str, float]
     last_calibration_values: Mapping[str, float]
     last_command_at: Mapping[str, datetime]
+    valve_available: Mapping[str, bool] = Field(default_factory=dict)
     outdoor_lockout_active: bool
     boiler_on: bool
     boiler_state_since: datetime | None
@@ -187,6 +188,7 @@ class RoomCommand(BaseModel):
     ema_temperature: float | None
     usable_sources: int
     degraded: bool
+    valves_unavailable: int = 0
     valve_targets: Mapping[str, float]
     calibration_values: Mapping[str, float]
 

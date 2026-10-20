@@ -30,6 +30,7 @@ def targets(config: RoomConfig, **overrides: object) -> dict[str, float]:
         "target": 21.0,
         "last_sent": {},
         "last_command_at": {},
+        "available": {},
         "now": NOW,
     }
     arguments.update(overrides)
@@ -81,6 +82,13 @@ def test_closing_a_valve_is_never_deferred() -> None:
     sent_at = {"climate.trv_front_room": NOW - timedelta(seconds=5)}
     assert targets(room(valve_mode="boost"), calling=False, last_command_at=sent_at) == {
         "climate.trv_front_room": 5.0
+    }
+
+
+def test_an_unavailable_valve_is_skipped_and_the_other_is_commanded() -> None:
+    config = room(valves=("climate.trv_left", "climate.trv_right"))
+    assert targets(config, target=22.0, available={"climate.trv_left": False}) == {
+        "climate.trv_right": 22.0
     }
 
 

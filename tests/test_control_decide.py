@@ -231,6 +231,40 @@ def test_the_valve_demand_keeps_a_room_without_a_source_warm() -> None:
     assert output.boiler.turn_on is True
 
 
+def test_an_unavailable_valve_is_skipped_and_the_room_is_degraded() -> None:
+    output = decide(payload(valve_available={"climate.trv_front_room": False}))
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.degraded is True
+    assert front_room.valves_unavailable == 1
+    assert front_room.valve_targets == {}
+    assert front_room.calling is False
+    assert output.boiler.turn_on is False
+
+
+def test_an_unavailable_valve_leaves_the_other_valve_of_the_room_commanded() -> None:
+    config = house(rooms=(room("front_room", valves=("climate.trv_left", "climate.trv_right")),))
+    output = decide(payload(house=config, valve_available={"climate.trv_left": False}))
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.valve_targets == {"climate.trv_right": 21.0}
+    assert front_room.degraded is True
+    assert front_room.calling is True
+
+
+def test_a_room_without_a_temperature_closes_its_valves_in_modulate_mode() -> None:
+    output = decide(
+        payload(
+            temperatures={
+                "sensor.front_room_temperature": None,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            }
+        )
+    )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.calling is False
+    assert front_room.valve_targets == {"climate.trv_front_room": 5.0}
+
+
 def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
     output = decide(payload())
     assert output.house_ema_temperature == pytest.approx(20.5)

@@ -77,8 +77,9 @@ These inputs are not in the spec's tables. Each one has a test in the task that 
 2. A room whose sources are all unusable must not call for heat, must hold its valves at
    `off_setpoint`, and must report `degraded` — unless a `demand_fallback_sensors` entity is
    `on`, which is the one case that calls without a temperature.
-3. A valve that is `unavailable` must not raise, and the other valves of the room must still
-   receive the target.
+3. A valve that is `unavailable` must not raise, the other valves of the room must still
+   receive the target, and the room must report degraded. A room with no available valve
+   must not demand the boiler.
 4. A window sensor in the state `open` must suspend the demand at once, and the valve of the
    room must move to `off_setpoint` without waiting for the command interval.
 5. A boiler command that the timing guard defers must not be sent, and a lockout or a master
@@ -670,6 +671,7 @@ class ControlInput(BaseModel):
     last_actuator_targets: Mapping[str, float]
     last_calibration_values: Mapping[str, float]
     last_command_at: Mapping[str, datetime]
+    valve_available: Mapping[str, bool] = Field(default_factory=dict)
     outdoor_lockout_active: bool
     boiler_on: bool
     boiler_state_since: datetime | None
@@ -689,6 +691,7 @@ class RoomCommand(BaseModel):
     ema_temperature: float | None
     usable_sources: int
     degraded: bool
+    valves_unavailable: int = 0
     valve_targets: Mapping[str, float]
     calibration_values: Mapping[str, float]
 
@@ -719,7 +722,7 @@ class ControlOutput(BaseModel):
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_models.py -v`
-Expected: PASS, eleven tests.
+Expected: PASS, thirteen tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1057,7 +1060,7 @@ def next_calling(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_demand.py -v`
-Expected: PASS, thirteen tests.
+Expected: PASS, eleven tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1116,6 +1119,7 @@ def targets(config: RoomConfig, **overrides: object) -> dict[str, float]:
         "target": 21.0,
         "last_sent": {},
         "last_command_at": {},
+        "available": {},
         "now": NOW,
     }
     arguments.update(overrides)
@@ -1170,6 +1174,13 @@ def test_closing_a_valve_is_never_deferred() -> None:
     }
 
 
+def test_an_unavailable_valve_is_skipped_and_the_other_is_commanded() -> None:
+    config = room(valves=("climate.trv_left", "climate.trv_right"))
+    assert targets(config, target=22.0, available={"climate.trv_left": False}) == {
+        "climate.trv_right": 22.0
+    }
+
+
 def test_every_valve_of_the_room_receives_the_target() -> None:
     config = room(valves=("climate.trv_left", "climate.trv_right"))
     assert targets(config, target=22.0) == {
@@ -1203,6 +1214,7 @@ def valve_targets(
     room: RoomConfig,
     *,
     blocked: bool,
+    available: Mapping[str, bool],
     calling: bool,
     target: float | None,
     last_sent: Mapping[str, float],
@@ -1219,6 +1231,8 @@ def valve_targets(
     rounded = round_setpoint(min(max(wanted, room.min_temp), room.max_temp))
     commands: dict[str, float] = {}
     for entity_id in room.valves:
+        if available.get(entity_id) is False:
+            continue
         sent = last_sent.get(entity_id)
         if sent is not None and abs(sent - rounded) < REPEAT_THRESHOLD:
             continue
@@ -1233,7 +1247,7 @@ def valve_targets(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_valves.py -v`
-Expected: PASS, sixteen tests.
+Expected: PASS, fifteen tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1634,6 +1648,40 @@ def test_the_valve_demand_keeps_a_room_without_a_source_warm() -> None:
     assert output.boiler.turn_on is True
 
 
+def test_an_unavailable_valve_is_skipped_and_the_room_is_degraded() -> None:
+    output = decide(payload(valve_available={"climate.trv_front_room": False}))
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.degraded is True
+    assert front_room.valves_unavailable == 1
+    assert front_room.valve_targets == {}
+    assert front_room.calling is False
+    assert output.boiler.turn_on is False
+
+
+def test_an_unavailable_valve_leaves_the_other_valve_of_the_room_commanded() -> None:
+    config = house(rooms=(room("front_room", valves=("climate.trv_left", "climate.trv_right")),))
+    output = decide(payload(house=config, valve_available={"climate.trv_left": False}))
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.valve_targets == {"climate.trv_right": 21.0}
+    assert front_room.degraded is True
+    assert front_room.calling is True
+
+
+def test_a_room_without_a_temperature_closes_its_valves_in_modulate_mode() -> None:
+    output = decide(
+        payload(
+            temperatures={
+                "sensor.front_room_temperature": None,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            }
+        )
+    )
+    front_room = next(command for command in output.rooms if command.room_id == "front_room")
+    assert front_room.calling is False
+    assert front_room.valve_targets == {"climate.trv_front_room": 5.0}
+
+
 def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
     output = decide(payload())
     assert output.house_ema_temperature == pytest.approx(20.5)
@@ -1641,7 +1689,7 @@ def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
 
 @pytest.mark.parametrize(
     ("previous", "value", "elapsed", "expected"),
-    [(None, 21.0, 30.0, 21.0), (20.0, 22.0, 0.0, 22.0), (20.0, 22.0, 1800.0, 20.0 + (1 - 0.36787944117))],
+    [(None, 21.0, 30.0, 21.0), (20.0, 22.0, 0.0, 22.0), (20.0, 22.0, 1800.0, 20.0 + 2 * (1 - 0.36787944117))],
 )
 def test_the_graph_average(previous: float | None, value: float, elapsed: float, expected: float) -> None:
     result = exponential_average(previous, value, elapsed, 1800.0)
@@ -1690,13 +1738,16 @@ def _is_fallback_demand(payload: ControlInput, room: RoomConfig) -> bool:
     return any(payload.valve_demands.get(entity_id) is True for entity_id in room.demand_fallback_sensors)
 
 
-def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool) -> RoomCommand:
+def _room_command(
+    payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool
+) -> RoomCommand:
+    """Return the commands and the reported state of one room."""
     temperature = weighted_temperature(room.sources, payload.temperatures)
     usable = usable_source_count(room.sources, payload.temperatures)
-    window_open = any(
-        payload.window_states.get(entity_id) in WINDOW_OPEN_STATES
-        for entity_id in room.window_sensors
-    )
+    window_open = _window_open(payload, room)
+    unavailable_valves = [
+        entity_id for entity_id in room.valves if payload.valve_available.get(entity_id) is False
+    ]
     calling = next_calling(
         runtime.calling,
         room,
@@ -1706,11 +1757,16 @@ def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom,
         window_open,
         _is_fallback_demand(payload, room),
     )
+    calling = calling and len(unavailable_valves) < len(room.valves)
     elapsed = (
-        (payload.now - runtime.updated_at).total_seconds() if runtime.updated_at is not None else 0.0
+        (payload.now - runtime.updated_at).total_seconds()
+        if runtime.updated_at is not None
+        else 0.0
     )
     ema = (
-        exponential_average(runtime.ema_temperature, temperature, elapsed, payload.house.ema_seconds)
+        exponential_average(
+            runtime.ema_temperature, temperature, elapsed, payload.house.ema_seconds
+        )
         if temperature is not None
         else runtime.ema_temperature
     )
@@ -1721,19 +1777,22 @@ def _room_command(payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom,
         room_temperature=temperature,
         ema_temperature=ema,
         usable_sources=usable,
-        degraded=usable == 0,
+        degraded=usable == 0 or bool(unavailable_valves),
+        valves_unavailable=len(unavailable_valves),
         valve_targets=valve_targets(
             room,
-            blocked=blocked or window_open or runtime.hvac_mode == "off",
+            blocked=blocked
+            or window_open
+            or runtime.hvac_mode == "off"
+            or (temperature is None and not calling),
+            available=payload.valve_available,
             calling=calling,
             target=runtime.target_temperature,
             last_sent=payload.last_actuator_targets,
             last_command_at=payload.last_command_at,
             now=payload.now,
         ),
-        calibration_values=calibration_values(
-            room, temperature, payload.last_calibration_values
-        ),
+        calibration_values=calibration_values(room, temperature, payload.last_calibration_values),
     )
 
 
@@ -1809,7 +1868,7 @@ def _status(
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `uv run pytest tests/test_control_decide.py -v`
-Expected: PASS, sixteen tests.
+Expected: PASS, twenty tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2068,6 +2127,13 @@ class RoomClimateCoordinator:
             )
             if (state := self.hass.states.get(entity_id)) is not None
         }
+        valve_available = {
+            entity_id: state is not None and state.state != "unavailable"
+            for entity_id in (
+                valve for room in self.config.rooms for valve in room.valves
+            )
+            if (state := self.hass.states.get(entity_id)) is not None
+        }
         outdoor = outdoor_temperature(self.config.outdoor_sources, temperatures)
         self.lockout_active = next_lockout(
             self.lockout_active,
@@ -2080,6 +2146,7 @@ class RoomClimateCoordinator:
             house=self.config,
             temperatures=temperatures,
             valve_demands=valve_demands,
+            valve_available=valve_available,
             window_states=window_states,
             runtimes=tuple(self.runtimes.values()),
             last_actuator_targets=self.last_actuator_targets,

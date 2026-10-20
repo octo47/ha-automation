@@ -128,6 +128,7 @@ def valve_targets(
     room: RoomConfig,
     *,
     blocked: bool,
+    available: Mapping[str, bool],
     calling: bool,
     target: float | None,
     last_sent: Mapping[str, float],
@@ -144,6 +145,8 @@ def valve_targets(
     rounded = round_setpoint(min(max(wanted, room.min_temp), room.max_temp))
     commands: dict[str, float] = {}
     for entity_id in room.valves:
+        if available.get(entity_id) is False:
+            continue
         sent = last_sent.get(entity_id)
         if sent is not None and abs(sent - rounded) < REPEAT_THRESHOLD:
             continue
@@ -215,6 +218,9 @@ def _room_command(
     temperature = weighted_temperature(room.sources, payload.temperatures)
     usable = usable_source_count(room.sources, payload.temperatures)
     window_open = _window_open(payload, room)
+    unavailable_valves = [
+        entity_id for entity_id in room.valves if payload.valve_available.get(entity_id) is False
+    ]
     calling = next_calling(
         runtime.calling,
         room,
@@ -224,6 +230,7 @@ def _room_command(
         window_open,
         _is_fallback_demand(payload, room),
     )
+    calling = calling and len(unavailable_valves) < len(room.valves)
     elapsed = (
         (payload.now - runtime.updated_at).total_seconds()
         if runtime.updated_at is not None
@@ -243,10 +250,15 @@ def _room_command(
         room_temperature=temperature,
         ema_temperature=ema,
         usable_sources=usable,
-        degraded=usable == 0,
+        degraded=usable == 0 or bool(unavailable_valves),
+        valves_unavailable=len(unavailable_valves),
         valve_targets=valve_targets(
             room,
-            blocked=blocked or window_open or runtime.hvac_mode == "off",
+            blocked=blocked
+            or window_open
+            or runtime.hvac_mode == "off"
+            or (temperature is None and not calling),
+            available=payload.valve_available,
             calling=calling,
             target=runtime.target_temperature,
             last_sent=payload.last_actuator_targets,

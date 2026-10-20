@@ -303,6 +303,8 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
 6. Between those two values the room keeps its previous state.
 7. A window sensor of the room in the state `open` or `on` suspends the demand at once.
    The valve of a Hive TRV reports `open`, and a switch reports `on`.
+9. The room cannot call for heat when every valve of the room is `unavailable`. A room
+   with no working valve cannot deliver heat, so the boiler must not run for it.
 8. When the room temperature is `None`, the room calls when at least one
    `demand_fallback_sensors` entity is in the state `on`. This rule keeps a room warm
    after a source fails. Rule 8 is the only case that calls without a temperature. The
@@ -327,6 +329,9 @@ The mean is `sum(weight × value) / sum(weight)` over the usable sources only.
    keeps the other valves of the room, and reports the room as degraded.
 8. The component sits outside the internal control loop of the valve. The valve owns its
    position.
+9. A room whose temperature is unknown and which does not call puts its valves at
+   `off_setpoint`, in both valve modes. The component cannot measure the room, so it stops
+   heating it. Rule 8 of section 6.2 is the one case that keeps such a room calling.
 
 ### 6.4 Calibration
 
@@ -404,7 +409,8 @@ Climate entity rules:
 4. `hvac_action` is `heating` when the room calls, and `idle` otherwise.
 5. The entity accepts `set_temperature` and `set_hvac_mode`.
 6. Attributes: the usable source count, the room temperature, the calling state, the
-   valve list, the valve targets, the calibration value, and the degradation flag.
+   valve list, the valve targets, the calibration value, the count of unavailable valves,
+   and the degradation flag.
 
 ### 7.2 House device: the config entry
 
