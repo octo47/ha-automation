@@ -44,7 +44,6 @@
             "name": "Name",
             "area_id": "Area",
             "valves": "Valves",
-            "sources": "Temperature sources",
             "calibration": "Calibration",
             "calibration_scale": "Calibration scale",
             "valve_mode": "Valve mode",
@@ -60,6 +59,17 @@
             "lockout_temperature": "Room lockout temperature"
           }
         },
+        "sources": {
+          "title": "Temperature sources",
+          "description": "The temperature sources of the room. The sources of the area of the first valve come first.",
+          "data": {
+            "sources": "Temperature sources"
+          }
+        },
+        "weights": {
+          "title": "Source weights",
+          "description": "The weight of every source in the mean of the room."
+        },
         "reconfigure": {
           "title": "Change the room",
           "description": "The room id is derived from the room name. The valves are the ones this house holds.",
@@ -67,7 +77,6 @@
             "name": "Name",
             "area_id": "Area",
             "valves": "Valves",
-            "sources": "Temperature sources",
             "calibration": "Calibration",
             "calibration_scale": "Calibration scale",
             "valve_mode": "Valve mode",

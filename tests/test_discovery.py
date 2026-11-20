@@ -1,4 +1,4 @@
-"""The valves the instance holds, and the room flow offers them."""
+"""The valves and the sensors the instance holds, and the room flow offers them."""
 
 from __future__ import annotations
 
@@ -11,9 +11,14 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
-from custom_components.room_climate.discovery import available_valves
+from custom_components.room_climate.discovery import (
+    available_temperature_sources,
+    available_valves,
+)
 
 HIVE_ENTRY_DOMAIN = "mqtt"
+TEMPERATURE = "temperature"
+HUMIDITY = "humidity"
 
 
 def add_device(
@@ -45,6 +50,8 @@ def add_entity(
     *,
     device_id: str | None = None,
     original_name: str | None = None,
+    original_device_class: str | None = None,
+    area_id: str | None = None,
 ) -> str:
     """Add one entity to the registry, and return its entity id."""
     registry = er.async_get(hass)
@@ -55,7 +62,10 @@ def add_entity(
         suggested_object_id=object_id,
         device_id=device_id,
         original_name=original_name,
+        original_device_class=original_device_class,
     )
+    if area_id is not None:
+        registry.async_update_entity(entry.entity_id, area_id=area_id)
     return entry.entity_id
 
 
@@ -73,6 +83,27 @@ def add_valve(
         hass, entry, object_id, manufacturer=manufacturer, model=model, area_id=area_id
     )
     return add_entity(hass, "climate", object_id, device_id=device_id)
+
+
+def add_sensor(
+    hass: HomeAssistant,
+    object_id: str,
+    *,
+    device_id: str | None = None,
+    original_name: str | None = None,
+    original_device_class: str = TEMPERATURE,
+    area_id: str | None = None,
+) -> str:
+    """Add one sensor of the house, and return its entity id."""
+    return add_entity(
+        hass,
+        "sensor",
+        object_id,
+        device_id=device_id,
+        original_name=original_name,
+        original_device_class=original_device_class,
+        area_id=area_id,
+    )
 
 
 def room_entry(hass: HomeAssistant, rooms: Iterable[dict[str, object]] = ()) -> MockConfigEntry:
@@ -185,3 +216,84 @@ def test_a_claimed_valve_is_not_offered(hass: HomeAssistant, hive_entry) -> None
     add_valve(hass, hive_entry, "trv_front_room")
     entry = room_entry(hass, [room_subentry("climate.trv_front_room")])
     assert available_valves(hass, entry) == ()
+
+
+def test_a_temperature_sensor_is_a_source(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature")
+    sources = available_temperature_sources(hass, room_entry(hass))
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
+
+
+def test_a_sensor_of_another_device_class_is_not_a_source(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_humidity", original_device_class=HUMIDITY)
+    assert available_temperature_sources(hass, room_entry(hass)) == ()
+
+
+def test_a_sensor_without_a_device_class_is_not_a_source(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature", original_device_class=None)
+    assert available_temperature_sources(hass, room_entry(hass)) == ()
+
+
+def test_a_device_temperature_is_not_a_source(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_door_device_temperature")
+    add_sensor(hass, "front_room_temperature")
+    sources = available_temperature_sources(hass, room_entry(hass))
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
+
+
+def test_a_claimed_source_is_not_offered(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature")
+    entry = room_entry(hass, [room_subentry("climate.trv_front_room")])
+    assert available_temperature_sources(hass, entry) == ()
+
+
+def test_a_claimed_source_of_another_room_stays_offered(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature")
+    entry = room_entry(hass, [room_subentry("climate.trv_front_room")])
+    sources = available_temperature_sources(
+        hass, entry, exclude_subentry_id=next(iter(entry.subentries))
+    )
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
+
+
+def test_the_sources_of_the_first_area_come_first(
+    hass: HomeAssistant, hive_entry, area_registry: ar.AreaRegistry
+) -> None:
+    area = area_registry.async_get_or_create("Front Room")
+    device_id = add_device(hass, hive_entry, "room_sensor", area_id=area.id)
+    add_sensor(hass, "front_room_temperature", device_id=device_id)
+    add_sensor(hass, "back_room_temperature")
+    sources = available_temperature_sources(hass, room_entry(hass), first_area=area.id)
+    assert [source.entity_id for source in sources] == [
+        "sensor.front_room_temperature",
+        "sensor.back_room_temperature",
+    ]
+
+
+def test_a_source_carries_the_area_of_its_device(
+    hass: HomeAssistant, hive_entry, area_registry: ar.AreaRegistry
+) -> None:
+    area = area_registry.async_get_or_create("Front Room")
+    device_id = add_device(hass, hive_entry, "room_sensor", area_id=area.id)
+    add_sensor(hass, "front_room_temperature", device_id=device_id)
+    assert available_temperature_sources(hass, room_entry(hass))[0].area_id == area.id
+
+
+def test_a_source_carries_the_area_of_its_entity_when_its_device_has_none(
+    hass: HomeAssistant, hive_entry, area_registry: ar.AreaRegistry
+) -> None:
+    area = area_registry.async_get_or_create("Front Room")
+    device_id = add_device(hass, hive_entry, "room_sensor")
+    add_sensor(
+        hass,
+        "front_room_temperature",
+        device_id=device_id,
+        original_name="Room Sensor",
+        area_id=area.id,
+    )
+    assert available_temperature_sources(hass, room_entry(hass))[0].area_id == area.id
+
+
+def test_a_source_carries_the_name_of_its_entity(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature", original_name="Front Room Sensor")
+    assert available_temperature_sources(hass, room_entry(hass))[0].name == "Front Room Sensor"
