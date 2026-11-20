@@ -58,7 +58,9 @@
           "off_setpoint": "Off setpoint",
           "valve_command_interval_seconds": "Valve command interval",
           "window_sensors": "Window sensors",
-          "demand_fallback_sensors": "Heat required sensors"
+          "demand_fallback_sensors": "Heat required sensors",
+          "outdoor_sources": "Room outdoor temperature sources",
+          "lockout_temperature": "Room lockout temperature"
         }
       },
       "edit_room": {
@@ -84,7 +86,9 @@
           "off_setpoint": "Off setpoint",
           "valve_command_interval_seconds": "Valve command interval",
           "window_sensors": "Window sensors",
-          "demand_fallback_sensors": "Heat required sensors"
+          "demand_fallback_sensors": "Heat required sensors",
+          "outdoor_sources": "Room outdoor temperature sources",
+          "lockout_temperature": "Room lockout temperature"
         }
       },
       "remove_room": {

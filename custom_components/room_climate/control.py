@@ -32,6 +32,7 @@ from .models import (
     BoilerCommand,
     ControlInput,
     ControlOutput,
+    HouseConfig,
     RoomCommand,
     RoomConfig,
     RuntimeRoom,
@@ -96,6 +97,18 @@ def next_lockout(active: bool, outdoor: float | None, threshold: float, hysteres
     if active:
         return outdoor > threshold - hysteresis
     return outdoor >= threshold
+
+
+def room_outdoor_sources(house: HouseConfig, room: RoomConfig) -> Sequence[str]:
+    """Return the outdoor sources a room reads: its own when it names them."""
+    return room.outdoor_sources if room.outdoor_sources else house.outdoor_sources
+
+
+def room_lockout_temperature(house: HouseConfig, room: RoomConfig) -> float:
+    """Return the lockout threshold of a room: its own when it names one."""
+    if room.lockout_temperature is not None:
+        return room.lockout_temperature
+    return house.lockout_temperature
 
 
 def next_calling(
@@ -212,7 +225,11 @@ def _window_open(payload: ControlInput, room: RoomConfig) -> bool:
 
 
 def _room_command(
-    payload: ControlInput, room: RoomConfig, runtime: RuntimeRoom, blocked: bool
+    payload: ControlInput,
+    room: RoomConfig,
+    runtime: RuntimeRoom,
+    blocked: bool,
+    room_locked: bool,
 ) -> RoomCommand:
     """Return the commands and the reported state of one room."""
     temperature = weighted_temperature(room.sources, payload.temperatures)
@@ -230,7 +247,7 @@ def _room_command(
         window_open,
         _is_fallback_demand(payload, room),
     )
-    calling = calling and len(unavailable_valves) < len(room.valves)
+    calling = calling and not room_locked and len(unavailable_valves) < len(room.valves)
     elapsed = (
         (payload.now - runtime.updated_at).total_seconds()
         if runtime.updated_at is not None
@@ -247,6 +264,7 @@ def _room_command(
         room_id=room.room_id,
         calling=calling,
         window_open=window_open,
+        locked_out=room_locked,
         room_temperature=temperature,
         ema_temperature=ema,
         usable_sources=usable,
@@ -255,6 +273,7 @@ def _room_command(
         valve_targets=valve_targets(
             room,
             blocked=blocked
+            or room_locked
             or window_open
             or runtime.hvac_mode == "off"
             or (temperature is None and not calling),
@@ -276,7 +295,11 @@ def decide(payload: ControlInput) -> ControlOutput:
     runtimes = {room.room_id: room for room in payload.runtimes}
     commands = tuple(
         _room_command(
-            payload, room, runtimes.get(room.room_id, RuntimeRoom(room_id=room.room_id)), blocked
+            payload,
+            room,
+            runtimes.get(room.room_id, RuntimeRoom(room_id=room.room_id)),
+            blocked,
+            payload.room_lockouts.get(room.room_id, False) and not payload.override_active,
         )
         for room in payload.house.rooms
     )

@@ -65,6 +65,8 @@ class RoomConfig(BaseModel):
     )
     window_sensors: tuple[str, ...] = ()
     demand_fallback_sensors: tuple[str, ...] = ()
+    outdoor_sources: tuple[str, ...] = ()
+    lockout_temperature: float | None = Field(default=None, ge=-20.0, le=40.0)
 
     @model_validator(mode="after")
     def _validate_room(self) -> Self:
@@ -111,7 +113,11 @@ class HouseConfig(BaseModel):
                 *(
                     item
                     for room in self.rooms
-                    for item in (*room.valves, *(source.entity_id for source in room.sources))
+                    for item in (
+                        *room.valves,
+                        *room.outdoor_sources,
+                        *(source.entity_id for source in room.sources),
+                    )
                 ),
             ):
                 if SIM_MARKER not in entity_id:
@@ -170,6 +176,7 @@ class ControlInput(BaseModel):
     last_command_at: Mapping[str, datetime]
     valve_available: Mapping[str, bool] = Field(default_factory=dict)
     outdoor_lockout_active: bool
+    room_lockouts: Mapping[str, bool]
     boiler_on: bool
     boiler_state_since: datetime | None
     master_enabled: bool
@@ -184,6 +191,7 @@ class RoomCommand(BaseModel):
     room_id: str
     calling: bool
     window_open: bool
+    locked_out: bool
     room_temperature: float | None
     ema_temperature: float | None
     usable_sources: int

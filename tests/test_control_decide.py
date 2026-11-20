@@ -59,6 +59,7 @@ def payload(**overrides: object) -> ControlInput:
         "last_calibration_values": {},
         "last_command_at": {},
         "outdoor_lockout_active": False,
+        "room_lockouts": {},
         "boiler_on": False,
         "boiler_state_since": None,
         "master_enabled": True,

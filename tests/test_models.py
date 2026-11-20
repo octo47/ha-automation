@@ -158,3 +158,21 @@ def test_a_simulated_house_rejects_a_real_entity() -> None:
 def test_a_simulated_house_rejects_a_real_boiler() -> None:
     with pytest.raises(ValidationError):
         HouseConfig.from_options(sim_options(boiler_entity="climate.heating_heat"))
+
+
+def test_a_room_keeps_its_own_outdoor_threshold() -> None:
+    config = room(lockout_temperature=21.5, outdoor_sources=("sensor.room_outdoor",))
+    assert config.lockout_temperature == 21.5
+    assert config.outdoor_sources == ("sensor.room_outdoor",)
+
+
+def test_a_room_outdoor_threshold_outside_the_band_fails() -> None:
+    with pytest.raises(ValidationError):
+        room(lockout_temperature=41.0)
+
+
+def test_two_rooms_may_read_one_outdoor_source() -> None:
+    """The outdoor source is a reading, not a claim, so two rooms may share it."""
+    other = room("back_room", outdoor_sources=("sensor.outdoor",))
+    config = house(rooms=(room(outdoor_sources=("sensor.outdoor",)), other))
+    assert config.rooms[0].outdoor_sources == ("sensor.outdoor",)

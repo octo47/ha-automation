@@ -172,3 +172,33 @@ async def test_an_open_window_closes_the_valve(hass: HomeAssistant) -> None:
 
     assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 5.0
     assert hass.states.get("binary_sensor.room_climate_front_room_calling").state == "off"
+
+
+async def test_a_room_threshold_locks_out_one_room_and_closes_its_valve(
+    hass: HomeAssistant,
+) -> None:
+    await setup_bench(
+        hass,
+        lockout_temperature=25.0,
+        rooms=[
+            bench_room(lockout_temperature=19.0),
+            bench_room(
+                room_id="back_room",
+                name="Back Room",
+                valves=["climate.sim_back_room_valve"],
+                sources=[{"entity_id": "number.sim_back_room_room_temperature"}],
+            ),
+        ],
+    )
+    await set_number(hass, "number.sim_front_room_room_temperature", 19.0)
+    await set_number(hass, "number.sim_back_room_room_temperature", 19.0)
+    await set_target(hass, "climate.room_climate_front_room", 21.0)
+    await set_target(hass, "climate.room_climate_back_room", 21.0)
+    assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 21.0
+
+    await set_number(hass, "number.sim_outdoor_temperature", 19.5)
+
+    assert hass.states.get("climate.room_climate_front_room").attributes["locked_out"] is True
+    assert hass.states.get("climate.sim_front_room_valve").attributes["temperature"] == 5.0
+    assert hass.states.get("climate.room_climate_back_room").attributes["locked_out"] is False
+    assert hass.states.get("climate.sim_back_room_valve").attributes["temperature"] == 21.0

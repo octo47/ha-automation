@@ -12,7 +12,14 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
-from .control import decide, feed_entity_id, next_lockout, outdoor_temperature
+from .control import (
+    decide,
+    feed_entity_id,
+    next_lockout,
+    outdoor_temperature,
+    room_lockout_temperature,
+    room_outdoor_sources,
+)
 from .models import ControlInput, ControlOutput, HouseConfig, RuntimeRoom
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +60,7 @@ class RoomClimateCoordinator:
         self.boiler_on = False
         self.boiler_state_since: datetime | None = None
         self.lockout_active = False
+        self.room_lockouts: dict[str, bool] = {}
         self.last_actuator_targets: dict[str, float] = {}
         self.last_calibration_values: dict[str, float] = {}
         self.last_command_at: dict[str, datetime] = {}
@@ -95,6 +103,7 @@ class RoomClimateCoordinator:
                 *(source.entity_id for source in room.sources),
                 *room.window_sensors,
                 *room.demand_fallback_sensors,
+                *room.outdoor_sources,
             )
         ]
         watched.append(self.config.boiler_entity)
@@ -127,6 +136,11 @@ class RoomClimateCoordinator:
             entity_id: _numeric_state(self.hass, entity_id)
             for entity_id in (
                 *self.config.outdoor_sources,
+                *(
+                    entity_id
+                    for room in self.config.rooms
+                    for entity_id in room_outdoor_sources(self.config, room)
+                ),
                 *(source.entity_id for room in self.config.rooms for source in room.sources),
             )
         }
@@ -153,6 +167,15 @@ class RoomClimateCoordinator:
             self.config.lockout_temperature,
             self.config.lockout_hysteresis,
         )
+        room_lockouts: dict[str, bool] = {}
+        for room in self.config.rooms:
+            room_lockouts[room.room_id] = next_lockout(
+                self.room_lockouts.get(room.room_id, False),
+                outdoor_temperature(room_outdoor_sources(self.config, room), temperatures),
+                room_lockout_temperature(self.config, room),
+                self.config.lockout_hysteresis,
+            )
+        self.room_lockouts = room_lockouts
         payload = ControlInput(
             now=dt_util.utcnow(),
             house=self.config,
@@ -165,6 +188,7 @@ class RoomClimateCoordinator:
             last_calibration_values=self.last_calibration_values,
             last_command_at=self.last_command_at,
             outdoor_lockout_active=self.lockout_active,
+            room_lockouts=room_lockouts,
             boiler_on=self.boiler_on,
             boiler_state_since=self.boiler_state_since,
             master_enabled=self.master_enabled,

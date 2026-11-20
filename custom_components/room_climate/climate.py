@@ -88,6 +88,7 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
             "valves_unavailable": 0 if command is None else command.valves_unavailable,
             "degraded": command is None or command.degraded,
             "window_open": command is not None and command.window_open,
+            "locked_out": command is not None and command.locked_out,
         }
 
     def _remember(self) -> None:

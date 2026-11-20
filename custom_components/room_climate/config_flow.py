@@ -144,6 +144,12 @@ ROOM_SCHEMA = probatio.Schema(
         probatio.Optional(CONF_DEMAND_FALLBACK_SENSORS, default=list): _selector(
             "EntitySelector", selector.EntitySelectorConfig(multiple=True)
         ),
+        probatio.Optional(CONF_OUTDOOR_SOURCES, default=list): _selector(
+            "EntitySelector", selector.EntitySelectorConfig(multiple=True)
+        ),
+        probatio.Optional(CONF_LOCKOUT_TEMPERATURE): probatio.Any(
+            None, _number(-20, 40, 0.5, "°C")
+        ),
     },
     # The room id is derived from the name, so an input that carries one is accepted.
     extra=probatio.ALLOW_EXTRA,

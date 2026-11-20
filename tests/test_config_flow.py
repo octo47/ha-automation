@@ -120,3 +120,58 @@ async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"]["base"] == "shared_entity"
+
+
+async def add_room(hass: HomeAssistant, entry: MockConfigEntry, room: dict[str, object]):
+    """Add one room through the room form of the options flow."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "add_room"}
+    )
+    return await hass.config_entries.options.async_configure(result["flow_id"], room)
+
+
+async def test_the_room_form_saves_the_outdoor_fields(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
+    )
+    entry.add_to_hass(hass)
+    result = await add_room(
+        hass,
+        entry,
+        {
+            "room_id": "front_room",
+            "name": "Front Room",
+            "valves": ["climate.trv_front_room"],
+            "sources": [{"entity_id": "sensor.front_room"}],
+            "outdoor_sources": ["sensor.room_outdoor"],
+            "lockout_temperature": 20.0,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    saved = result["data"]["rooms"][0]
+    assert saved["outdoor_sources"] == ["sensor.room_outdoor"]
+    assert saved["lockout_temperature"] == 20.0
+
+
+async def test_an_empty_room_threshold_saves_none(hass: HomeAssistant) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
+    )
+    entry.add_to_hass(hass)
+    result = await add_room(
+        hass,
+        entry,
+        {
+            "room_id": "front_room",
+            "name": "Front Room",
+            "valves": ["climate.trv_front_room"],
+            "sources": [{"entity_id": "sensor.front_room"}],
+            "outdoor_sources": [],
+            "lockout_temperature": None,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    saved = result["data"]["rooms"][0]
+    assert saved["outdoor_sources"] == []
+    assert saved["lockout_temperature"] is None
