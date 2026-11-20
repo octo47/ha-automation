@@ -30,6 +30,12 @@ OPTIONS: dict[str, Any] = {
     "outdoor_sources": ["sensor.outdoor"],
 }
 
+SIM_HOUSE: dict[str, Any] = {
+    "boiler_entity": "climate.sim_boiler",
+    "outdoor_sources": ["number.sim_outdoor_temperature"],
+    "simulation": True,
+}
+
 ROOM_FIELDS: tuple[str, ...] = (
     "name",
     "valves",
@@ -81,14 +87,23 @@ def add_sensor(hass: HomeAssistant, object_id: str, *, name: str | None = None) 
 
 
 async def setup_house(
-    hass: HomeAssistant, *, rooms: list[dict[str, object]] | None = None, **overrides: Any
+    hass: HomeAssistant,
+    *,
+    rooms: list[dict[str, object]] | None = None,
+    house_data: dict[str, object] | None = None,
+    **overrides: Any,
 ) -> MockConfigEntry:
-    """One loaded house entry, with the given rooms as its subentries."""
+    """One loaded house entry, with the given rooms as its subentries.
+
+    The house sits in the data of the entry when `house_data` names it, and in the
+    options otherwise, so a test can tell the two apart.
+    """
     await enable_services(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Room Climate",
-        options={**OPTIONS, **overrides},
+        data=house_data or {},
+        options={} if house_data is not None else {**OPTIONS, **overrides},
         subentries_data=rooms if rooms is not None else [],
     )
     entry.add_to_hass(hass)
@@ -495,6 +510,20 @@ async def test_a_simulated_entry_asks_for_the_name_only(hass: HomeAssistant) -> 
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["room_id"] == "front_room"
+    assert result["data"]["valves"] == ["climate.sim_front_room_valve"]
+    assert result["data"]["sources"] == [{"entity_id": "number.sim_front_room_room_temperature"}]
+
+
+async def test_the_room_flow_reads_a_simulated_house_from_the_entry_data(
+    hass: HomeAssistant,
+) -> None:
+    """A simulation flag in the data of the entry gives a simulated room flow."""
+    entry = await setup_house(hass, house_data=SIM_HOUSE)
+    result = await start_user_step(hass, entry)
+    assert result["type"] is FlowResultType.FORM
+    assert form_fields(result) == ["name"]
+    result = await submit(hass, result["flow_id"], {"name": "Front Room"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["valves"] == ["climate.sim_front_room_valve"]
     assert result["data"]["sources"] == [{"entity_id": "number.sim_front_room_room_temperature"}]
 

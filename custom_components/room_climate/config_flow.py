@@ -77,7 +77,7 @@ from .discovery import (
     available_temperature_sources,
     available_valves,
 )
-from .models import HouseConfig, RoomConfig
+from .models import HouseConfig, RoomConfig, house_settings
 from .sim import sim_source_entity, sim_valve_entity
 
 SOURCE_ENTITY = "entity_id"
@@ -446,7 +446,7 @@ class RoomSubentryFlow(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Show the first room form, and hold its answer for the source step."""
         entry = self._get_entry()
-        if entry.options.get(CONF_SIMULATION):
+        if HouseConfig.from_entry(entry).simulation:
             return self._step_simulated(entry, step_id, user_input)
         candidates = available_valves(self.hass, entry, exclude_subentry_id=self._exclude(step_id))
         if not candidates:
@@ -560,7 +560,9 @@ class RoomSubentryFlow(ConfigSubentryFlow):
         """Return the error key of one room form result, or None when it is sound.
 
         The house model claims the valves and the sources of its rooms, so a room
-        that takes one already in use is refused here.
+        that takes one already in use is refused here. The house of the entry is read
+        from its settings, and no validation of the stored house can raise, because a
+        refusal of the form is an error key and not a failure of the flow.
         """
         rooms = [
             dict(subentry.data)
@@ -568,7 +570,7 @@ class RoomSubentryFlow(ConfigSubentryFlow):
             if subentry.subentry_type == SUBENTRY_TYPE_ROOM and subentry.subentry_id != exclude
         ]
         rooms.append(payload)
-        return _validate_house({**dict(entry.options), CONF_ROOMS: rooms})[1]
+        return _validate_house({**house_settings(entry), CONF_ROOMS: rooms})[1]
 
 
 class RoomClimateOptionsFlow(OptionsFlowWithConfigEntry):
@@ -577,7 +579,9 @@ class RoomClimateOptionsFlow(OptionsFlowWithConfigEntry):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Edit the house settings, the only thing the options carry."""
         if user_input is not None:
-            config, error = _validate_house({**dict(self.options), **user_input, CONF_ROOMS: []})
+            config, error = _validate_house(
+                {**self._house_settings(), **user_input, CONF_ROOMS: []}
+            )
             if config is not None:
                 saved = config.model_dump(mode="json")
                 saved.pop(CONF_ROOMS, None)
@@ -590,5 +594,10 @@ class RoomClimateOptionsFlow(OptionsFlowWithConfigEntry):
         return self.async_show_form(step_id="init", data_schema=self._house_schema())
 
     def _house_schema(self) -> probatio.Schema:
-        """The house form, pre-filled with the current options."""
-        return self.add_suggested_values_to_schema(HOUSE_SCHEMA, self.options)
+        """The house form, pre-filled with the house of the entry."""
+        return self.add_suggested_values_to_schema(HOUSE_SCHEMA, self._house_settings())
+
+    def _house_settings(self) -> dict[str, Any]:
+        """The settings of the house this flow changes."""
+        entry = self.hass.config_entries.async_get_entry(self.handler)
+        return house_settings(cast("ConfigEntry", entry))

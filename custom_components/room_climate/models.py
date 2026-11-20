@@ -39,6 +39,15 @@ if TYPE_CHECKING:
 FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 
+def house_settings(entry: ConfigEntry) -> dict[str, Any]:
+    """Return the settings of one house entry: the data of the entry, then its options.
+
+    The config flow writes the first house into the data of the entry, and every later
+    change into its options, so a changed setting wins over the first form.
+    """
+    return {**dict(entry.data), **dict(entry.options)}
+
+
 class TemperatureSource(BaseModel):
     """One temperature entity of a room, with its weight in the mean."""
 
@@ -155,13 +164,13 @@ class HouseConfig(BaseModel):
 
     @classmethod
     def from_entry(cls, entry: ConfigEntry) -> HouseConfig:
-        """Build the house model from the entry options and its room subentries."""
+        """Build the house model from the settings of the entry and its room subentries."""
         rooms = [
             {**dict(subentry.data), CONF_SUBENTRY_ID: subentry.subentry_id}
             for subentry in entry.subentries.values()
             if subentry.subentry_type == SUBENTRY_TYPE_ROOM
         ]
-        return cls.model_validate({**dict(entry.options), CONF_ROOMS: rooms})
+        return cls.model_validate({**house_settings(entry), CONF_ROOMS: rooms})
 
 
 class RuntimeRoom(BaseModel):

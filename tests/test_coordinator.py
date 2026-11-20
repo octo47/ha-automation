@@ -69,6 +69,17 @@ def options(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def house(**overrides: object) -> dict[str, object]:
+    """The house settings, as the config flow writes them into the data of an entry."""
+    payload: dict[str, object] = {
+        "name": "Home",
+        "boiler_entity": "climate.heating_heat",
+        "outdoor_sources": ["sensor.outdoor"],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def room_subentry(
     room_id: str = "front_room", name: str = "Front Room", **overrides: object
 ) -> dict[str, object]:
@@ -87,13 +98,20 @@ async def setup_entry(
     hass: HomeAssistant,
     *,
     rooms: list[dict[str, object]] | None = None,
+    house_data: dict[str, object] | None = None,
     **overrides: object,
 ) -> MockConfigEntry:
+    """One loaded house entry, with its house in the data, or in its options.
+
+    The config flow writes the first house into the data of the entry, and every later
+    change into its options, so a test names the one it means.
+    """
     await enable_services(hass)
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Room Climate",
-        options=options(**overrides),
+        data=house_data or {},
+        options={} if house_data is not None else options(**overrides),
         subentries_data=rooms if rooms is not None else [room_subentry()],
     )
     entry.add_to_hass(hass)
