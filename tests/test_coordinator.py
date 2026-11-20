@@ -60,25 +60,42 @@ def calls_for(hass: HomeAssistant, service: str, entity_id: str) -> list[dict[st
 
 
 def options(**overrides: object) -> dict[str, object]:
+    """The house options, which the options of the entry carry."""
     payload: dict[str, object] = {
         "boiler_entity": "climate.heating_heat",
         "outdoor_sources": ["sensor.outdoor"],
-        "rooms": [
-            {
-                "room_id": "front_room",
-                "name": "Front Room",
-                "valves": ["climate.trv_front_room"],
-                "sources": [{"entity_id": "sensor.front_room_temperature"}],
-            }
-        ],
     }
     payload.update(overrides)
     return payload
 
 
-async def setup_entry(hass: HomeAssistant, **overrides: object) -> MockConfigEntry:
+def room_subentry(
+    room_id: str = "front_room", name: str = "Front Room", **overrides: object
+) -> dict[str, object]:
+    """One room subentry of the entry."""
+    data: dict[str, object] = {
+        "room_id": room_id,
+        "name": name,
+        "valves": [f"climate.trv_{room_id}"],
+        "sources": [{"entity_id": f"sensor.{room_id}_temperature"}],
+    }
+    data.update(overrides)
+    return {"data": data, "subentry_type": "room", "title": name, "unique_id": None}
+
+
+async def setup_entry(
+    hass: HomeAssistant,
+    *,
+    rooms: list[dict[str, object]] | None = None,
+    **overrides: object,
+) -> MockConfigEntry:
     await enable_services(hass)
-    entry = MockConfigEntry(domain=DOMAIN, title="Room Climate", options=options(**overrides))
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Room Climate",
+        options=options(**overrides),
+        subentries_data=rooms if rooms is not None else [room_subentry()],
+    )
     entry.add_to_hass(hass)
     hass.states.async_set("sensor.front_room_temperature", "20.0")
     hass.states.async_set("sensor.outdoor", "8.0")
@@ -130,29 +147,20 @@ async def test_dry_run_sends_no_command(hass: HomeAssistant) -> None:
 
 
 async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssistant) -> None:
-    await enable_services(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Room Climate",
-        options=options(
-            dry_run=False,
-            rooms=[
-                {
-                    "room_id": "side_room",
-                    "name": "Side Room",
-                    "valves": ["climate.trv_side_room_a", "climate.trv_side_room_b"],
-                    "sources": [{"entity_id": "sensor.side_room_temperature"}],
-                }
-            ],
-        ),
-    )
-    entry.add_to_hass(hass)
     hass.states.async_set("sensor.side_room_temperature", "19.0")
-    hass.states.async_set("sensor.outdoor", "8.0")
     hass.states.async_set("climate.trv_side_room_a", "unavailable")
     hass.states.async_set("climate.trv_side_room_b", "heat", {"temperature": 5.0})
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    entry = await setup_entry(
+        hass,
+        dry_run=False,
+        rooms=[
+            room_subentry(
+                "side_room",
+                "Side Room",
+                valves=["climate.trv_side_room_a", "climate.trv_side_room_b"],
+            )
+        ],
+    )
     await set_room_target(entry, "side_room", 21.0)
     await hass.async_block_till_done()
     assert calls_for(hass, "set_temperature", "climate.trv_side_room_b")
@@ -162,31 +170,16 @@ async def test_an_unavailable_valve_does_not_stop_the_other_valve(hass: HomeAssi
 async def test_a_room_outdoor_source_runs_a_cycle_and_holds_its_latch(
     hass: HomeAssistant,
 ) -> None:
-    await enable_services(hass)
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Room Climate",
-        options=options(
-            dry_run=False,
-            rooms=[
-                {
-                    "room_id": "front_room",
-                    "name": "Front Room",
-                    "valves": ["climate.trv_front_room"],
-                    "sources": [{"entity_id": "sensor.front_room_temperature"}],
-                    "outdoor_sources": ["sensor.front_room_outdoor"],
-                    "lockout_temperature": 19.0,
-                }
-            ],
-        ),
+    entry = await setup_entry(
+        hass,
+        dry_run=False,
+        rooms=[
+            room_subentry(
+                outdoor_sources=["sensor.front_room_outdoor"],
+                lockout_temperature=19.0,
+            )
+        ],
     )
-    entry.add_to_hass(hass)
-    hass.states.async_set("sensor.front_room_temperature", "20.0")
-    hass.states.async_set("sensor.outdoor", "8.0")
-    hass.states.async_set("climate.trv_front_room", "heat", {"temperature": 5.0})
-    hass.states.async_set("climate.heating_heat", "off", {"temperature": 15.0})
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
     assert entry.runtime_data.room_lockouts["front_room"] is False
 
     hass.states.async_set("sensor.front_room_outdoor", "19.5")

@@ -24,17 +24,17 @@ async def async_setup_entry(
 ) -> None:
     """Add the house signals and the demand latch of every room, and the bench signals."""
     coordinator = entry.runtime_data
-    entities: list[BinarySensorEntity] = [
-        BoilerDemandSensor(coordinator),
-        OutdoorLockoutSensor(coordinator),
-    ]
-    entities.extend(RoomCallingSensor(coordinator, room) for room in coordinator.config.rooms)
-    if coordinator.config.simulation:
-        entities.extend(
-            SimHeatRequiredBinary(entry.entry_id, room.room_id) for room in coordinator.config.rooms
+    async_add_entities([BoilerDemandSensor(coordinator), OutdoorLockoutSensor(coordinator)])
+    for room in coordinator.config.rooms:
+        async_add_entities(
+            [RoomCallingSensor(coordinator, room)], config_subentry_id=room.subentry_id
         )
-        entities.append(SimBoilerFiringBinary(entry.entry_id))
-    async_add_entities(entities)
+    if coordinator.config.simulation:
+        signals: list[BinarySensorEntity] = [
+            SimHeatRequiredBinary(entry.entry_id, room.room_id) for room in coordinator.config.rooms
+        ]
+        signals.append(SimBoilerFiringBinary(entry.entry_id))
+        async_add_entities(signals)
 
 
 class HouseBinarySensor(BinarySensorEntity):

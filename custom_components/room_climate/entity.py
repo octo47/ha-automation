@@ -17,10 +17,15 @@ def house_device(coordinator: RoomClimateCoordinator) -> DeviceInfo:
     )
 
 
+def room_key(room: RoomConfig) -> str:
+    """Return the identifier of one room: its subentry, or its room id without one."""
+    return room.subentry_id or room.room_id
+
+
 def room_device(coordinator: RoomClimateCoordinator, room: RoomConfig) -> DeviceInfo:
     """Return the device that carries the entities of one room."""
     return DeviceInfo(
-        identifiers={(DOMAIN, f"{coordinator.entry.entry_id}_{room.room_id}")},
+        identifiers={(DOMAIN, f"{coordinator.entry.entry_id}_{room_key(room)}")},
         name=f"{coordinator.config.name} {room.name}",
     )
 

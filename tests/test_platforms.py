@@ -7,7 +7,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
 
-from .test_coordinator import calls, options, setup_entry
+from .test_coordinator import calls, options, room_subentry, setup_entry
 
 
 async def test_the_virtual_thermostat_reports_the_weighted_temperature(
@@ -60,6 +60,7 @@ async def test_a_second_entry_keeps_its_own_title_in_the_entity_ids(
         domain=DOMAIN,
         title="Room Climate Bench",
         options=options(dry_run=True, name="Room Climate Bench"),
+        subentries_data=[room_subentry()],
     )
     bench.add_to_hass(hass)
     await hass.config_entries.async_setup(bench.entry_id)

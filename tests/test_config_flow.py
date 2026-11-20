@@ -1,14 +1,14 @@
-"""The config flow creates the house entry and manages the rooms."""
+"""The config flow creates the house entry, and the options carry the house settings."""
 
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import area_registry as ar
-from homeassistant.helpers import device_registry
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
+
+from .test_coordinator import setup_entry
 
 
 async def test_user_flow_creates_the_entry(hass: HomeAssistant) -> None:
@@ -28,150 +28,32 @@ async def test_user_flow_creates_the_entry(hass: HomeAssistant) -> None:
     assert result["data"]["dry_run"] is True
 
 
-async def test_a_room_needs_a_valve_and_a_source(hass: HomeAssistant) -> None:
+async def test_the_options_flow_saves_the_house_settings(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(
-        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
+        domain=DOMAIN,
+        options={"boiler_entity": "climate.heating_heat", "outdoor_sources": ["sensor.outdoor"]},
     )
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "add_room"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "room_id": "front_room",
-            "name": "Front Room",
-            "valves": [],
-            "sources": [{"entity_id": "sensor.front_room"}],
-        },
-    )
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"]
-
-
-async def test_a_room_device_lands_in_its_area(
-    hass: HomeAssistant, area_registry: ar.AreaRegistry
-) -> None:
-    hass.states.async_set("sensor.front_room", "20.0")
-    area = area_registry.async_get_or_create("Front Room")
-    entry = MockConfigEntry(
-        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"outdoor_sources": ["sensor.outdoor"], "lockout_temperature": 21.0}
     )
-    entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["lockout_temperature"] == 21.0
+    assert "rooms" not in result["data"]
+
+
+async def test_an_options_save_leaves_the_rooms_alone(hass: HomeAssistant) -> None:
+    entry = await setup_entry(hass)
+    assert hass.states.get("climate.room_climate_front_room") is not None
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "add_room"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "room_id": "front_room",
-            "name": "Front Room",
-            "area_id": area.id,
-            "valves": ["climate.trv_front_room"],
-            "sources": [{"entity_id": "sensor.front_room"}],
-        },
+        result["flow_id"], {"lockout_temperature": 21.0}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
 
-    device = device_registry.async_get(hass).async_get_device_by_identifier(
-        (DOMAIN, f"{entry.entry_id}_front_room"), entry.entry_id
-    )
-    assert device is not None
-    assert device.area_id == area.id
-
-
-async def test_options_flow_rejects_a_shared_valve(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
-    )
-    entry.add_to_hass(hass)
-    room = {
-        "room_id": "front_room",
-        "name": "Front Room",
-        "valves": ["climate.trv_front_room"],
-        "sources": [{"entity_id": "sensor.front_room"}],
-    }
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "add_room"}
-    )
-    result = await hass.config_entries.options.async_configure(result["flow_id"], room)
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    hass.config_entries.async_update_entry(entry, options=result["data"])
-
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "add_room"}
-    )
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            **room,
-            "room_id": "back_room",
-            "name": "Back Room",
-            "sources": [{"entity_id": "sensor.back_room"}],
-        },
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"]["base"] == "shared_entity"
-
-
-async def add_room(hass: HomeAssistant, entry: MockConfigEntry, room: dict[str, object]):
-    """Add one room through the room form of the options flow."""
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "add_room"}
-    )
-    return await hass.config_entries.options.async_configure(result["flow_id"], room)
-
-
-async def test_the_room_form_saves_the_outdoor_fields(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
-    )
-    entry.add_to_hass(hass)
-    result = await add_room(
-        hass,
-        entry,
-        {
-            "room_id": "front_room",
-            "name": "Front Room",
-            "valves": ["climate.trv_front_room"],
-            "sources": [{"entity_id": "sensor.front_room"}],
-            "outdoor_sources": ["sensor.room_outdoor"],
-            "lockout_temperature": 20.0,
-        },
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    saved = result["data"]["rooms"][0]
-    assert saved["outdoor_sources"] == ["sensor.room_outdoor"]
-    assert saved["lockout_temperature"] == 20.0
-
-
-async def test_an_empty_room_threshold_saves_none(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, options={"rooms": [], "outdoor_sources": ["sensor.outdoor"]}
-    )
-    entry.add_to_hass(hass)
-    result = await add_room(
-        hass,
-        entry,
-        {
-            "room_id": "front_room",
-            "name": "Front Room",
-            "valves": ["climate.trv_front_room"],
-            "sources": [{"entity_id": "sensor.front_room"}],
-            "outdoor_sources": [],
-            "lockout_temperature": None,
-        },
-    )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    saved = result["data"]["rooms"][0]
-    assert saved["outdoor_sources"] == []
-    assert saved["lockout_temperature"] is None
+    assert len(entry.subentries) == 1
+    assert hass.states.get("climate.room_climate_front_room") is not None

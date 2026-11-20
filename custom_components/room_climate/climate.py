@@ -18,7 +18,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from . import RoomClimateConfigEntry
 from .const import DOMAIN
 from .coordinator import RoomClimateCoordinator
-from .entity import room_command, room_device
+from .entity import room_command, room_device, room_key
 from .models import RoomConfig, RuntimeRoom
 from .sim import SimBoilerEntity, SimValveEntity
 
@@ -30,15 +30,16 @@ async def async_setup_entry(
 ) -> None:
     """Add one virtual thermostat per room, and the virtual valves of a bench."""
     coordinator = entry.runtime_data
-    entities: list[ClimateEntity] = [
-        RoomClimateEntity(coordinator, room) for room in coordinator.config.rooms
-    ]
-    if coordinator.config.simulation:
-        entities.extend(
-            SimValveEntity(entry.entry_id, room.room_id) for room in coordinator.config.rooms
+    for room in coordinator.config.rooms:
+        async_add_entities(
+            [RoomClimateEntity(coordinator, room)], config_subentry_id=room.subentry_id
         )
-        entities.append(SimBoilerEntity(entry.entry_id))
-    async_add_entities(entities)
+    if coordinator.config.simulation:
+        valves: list[ClimateEntity] = [
+            SimValveEntity(entry.entry_id, room.room_id) for room in coordinator.config.rooms
+        ]
+        valves.append(SimBoilerEntity(entry.entry_id))
+        async_add_entities(valves)
 
 
 class RoomClimateEntity(RestoreEntity, ClimateEntity):
@@ -57,7 +58,7 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
         self.coordinator = coordinator
         self.room = room
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
-        self._attr_unique_id = f"{DOMAIN}_{coordinator.entry.entry_id}_{room.room_id}_climate"
+        self._attr_unique_id = f"{DOMAIN}_{coordinator.entry.entry_id}_{room_key(room)}_climate"
         self._attr_device_info = room_device(coordinator, room)
         self._attr_min_temp = room.min_temp
         self._attr_max_temp = room.max_temp

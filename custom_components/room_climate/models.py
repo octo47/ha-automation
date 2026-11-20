@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .const import (
     CALIBRATION_EXTERNAL,
     CALIBRATION_NONE,
+    CONF_ROOMS,
+    CONF_SUBENTRY_ID,
     DEFAULT_BOILER_ENTITY,
     DEFAULT_BOILER_OFF_TEMPERATURE,
     DEFAULT_BOILER_ON_TEMPERATURE,
@@ -27,8 +29,12 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
     SIM_MARKER,
+    SUBENTRY_TYPE_ROOM,
     VALVE_MODE_MODULATE,
 )
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
 
 FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -48,6 +54,7 @@ class RoomConfig(BaseModel):
     model_config = FROZEN
 
     room_id: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
+    subentry_id: str | None = None
     name: str = Field(min_length=1)
     valves: tuple[str, ...] = Field(min_length=1)
     sources: tuple[TemperatureSource, ...] = Field(min_length=1)
@@ -145,6 +152,16 @@ class HouseConfig(BaseModel):
     def from_options(cls, options: Mapping[str, Any]) -> HouseConfig:
         """Build the house model from the config entry options payload."""
         return cls.model_validate(dict(options))
+
+    @classmethod
+    def from_entry(cls, entry: ConfigEntry) -> HouseConfig:
+        """Build the house model from the entry options and its room subentries."""
+        rooms = [
+            {**dict(subentry.data), CONF_SUBENTRY_ID: subentry.subentry_id}
+            for subentry in entry.subentries.values()
+            if subentry.subentry_type == SUBENTRY_TYPE_ROOM
+        ]
+        return cls.model_validate({**dict(entry.options), CONF_ROOMS: rooms})
 
 
 class RuntimeRoom(BaseModel):

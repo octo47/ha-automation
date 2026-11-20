@@ -34,6 +34,9 @@ CONF_OFF_SETPOINT = "off_setpoint"
 CONF_VALVE_COMMAND_INTERVAL_SECONDS = "valve_command_interval_seconds"
 CONF_WINDOW_SENSORS = "window_sensors"
 CONF_DEMAND_FALLBACK_SENSORS = "demand_fallback_sensors"
+CONF_SUBENTRY_ID = "subentry_id"
+
+SUBENTRY_TYPE_ROOM = "room"
 
 DEFAULT_BOILER_ENTITY = "climate.heating_heat"
 DEFAULT_BOILER_ON_TEMPERATURE = 31.0

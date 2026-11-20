@@ -37,20 +37,28 @@ async def async_setup_entry(
 ) -> None:
     """Add the house sensors, the room graph temperatures, and the bench positions."""
     coordinator = entry.runtime_data
-    entities: list[SensorEntity] = [
-        OutdoorTemperatureSensor(coordinator),
-        HouseTemperatureSensor(coordinator),
-        StatusSensor(coordinator),
-    ]
+    async_add_entities(
+        [
+            OutdoorTemperatureSensor(coordinator),
+            HouseTemperatureSensor(coordinator),
+            StatusSensor(coordinator),
+        ]
+    )
     for room in coordinator.config.rooms:
-        entities.append(RoomTemperatureSensor(coordinator, room))
-        entities.append(RoomEmaTemperatureSensor(coordinator, room))
-    if coordinator.config.simulation:
-        entities.extend(
-            SimValvePositionSensor(entry.entry_id, room.room_id)
-            for room in coordinator.config.rooms
+        async_add_entities(
+            [
+                RoomTemperatureSensor(coordinator, room),
+                RoomEmaTemperatureSensor(coordinator, room),
+            ],
+            config_subentry_id=room.subentry_id,
         )
-    async_add_entities(entities)
+    if coordinator.config.simulation:
+        async_add_entities(
+            [
+                SimValvePositionSensor(entry.entry_id, room.room_id)
+                for room in coordinator.config.rooms
+            ]
+        )
 
 
 class HouseSensor(SensorEntity):

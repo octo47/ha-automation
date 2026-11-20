@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import probatio
 from homeassistant.config_entries import (
     ConfigEntry,
-    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryFlow,
     OptionsFlowWithConfigEntry,
+    SubentryFlowResult,
 )
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 from homeassistant.util import slugify
 from pydantic import ValidationError
@@ -67,15 +68,16 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
     DOMAIN,
+    SUBENTRY_TYPE_ROOM,
     VALVE_MODE_BOOST,
     VALVE_MODE_MODULATE,
 )
+from .discovery import ValveCandidate, available_valves
 from .models import HouseConfig, RoomConfig
+from .sim import sim_source_entity, sim_valve_entity
 
 SOURCE_ENTITY = "entity_id"
 SOURCE_WEIGHT = "weight"
-
-# The simulation flag of the house model, which the house form offers.
 
 # The room form carries no room id, so the payload of a room is the fields of the model.
 ROOM_FIELDS = tuple(RoomConfig.model_fields)
@@ -109,51 +111,70 @@ SOURCE_SCHEMA = probatio.Schema(
     }
 )
 
-ROOM_SCHEMA = probatio.Schema(
-    {
-        probatio.Required(CONF_NAME): _selector("TextSelector"),
-        probatio.Optional(CONF_AREA_ID): _selector("AreaSelector"),
-        probatio.Required(CONF_VALVES): _selector(
-            "EntitySelector", selector.EntitySelectorConfig(domain="climate", multiple=True)
-        ),
-        probatio.Required(CONF_SOURCES): probatio.All(cv.ensure_list, [SOURCE_SCHEMA]),
-        probatio.Optional(CONF_CALIBRATION, default=CALIBRATION_EXTERNAL): _selector(
-            "SelectSelector",
-            selector.SelectSelectorConfig(options=[CALIBRATION_EXTERNAL, CALIBRATION_NONE]),
-        ),
-        probatio.Optional(CONF_CALIBRATION_SCALE, default=DEFAULT_CALIBRATION_SCALE): _number(
-            1, 1000, 1
-        ),
-        probatio.Optional(CONF_VALVE_MODE, default=VALVE_MODE_MODULATE): _selector(
-            "SelectSelector",
-            selector.SelectSelectorConfig(options=[VALVE_MODE_MODULATE, VALVE_MODE_BOOST]),
-        ),
-        probatio.Optional(CONF_OPEN_OFFSET, default=DEFAULT_OPEN_OFFSET): _number(0, 5, 0.5, "°C"),
-        probatio.Optional(CONF_MIN_TEMP, default=5.0): _number(5, 20, 0.5, "°C"),
-        probatio.Optional(CONF_MAX_TEMP, default=30.0): _number(15, 35, 0.5, "°C"),
-        probatio.Optional(CONF_HYSTERESIS, default=DEFAULT_HYSTERESIS): _number(0, 2, 0.1, "°C"),
-        probatio.Optional(CONF_OFF_SETPOINT, default=DEFAULT_OFF_SETPOINT): _number(
-            5, 12, 0.5, "°C"
-        ),
-        probatio.Optional(
-            CONF_VALVE_COMMAND_INTERVAL_SECONDS, default=DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS
-        ): _number(0, 3600, 1, "s"),
-        probatio.Optional(CONF_WINDOW_SENSORS, default=list): _selector(
-            "EntitySelector", selector.EntitySelectorConfig(multiple=True)
-        ),
-        probatio.Optional(CONF_DEMAND_FALLBACK_SENSORS, default=list): _selector(
-            "EntitySelector", selector.EntitySelectorConfig(multiple=True)
-        ),
-        probatio.Optional(CONF_OUTDOOR_SOURCES, default=list): _selector(
-            "EntitySelector", selector.EntitySelectorConfig(multiple=True)
-        ),
-        probatio.Optional(CONF_LOCKOUT_TEMPERATURE): probatio.Any(
-            None, _number(-20, 40, 0.5, "°C")
-        ),
-    },
-    # The room id is derived from the name, so an input that carries one is accepted.
-    extra=probatio.ALLOW_EXTRA,
-)
+
+def _valve_field(candidates: Sequence[ValveCandidate]) -> Any:
+    """Return the valve field: a multi-select over the valves the instance holds."""
+    options: list[selector.SelectOptionDict] = [
+        {"value": candidate.entity_id, "label": candidate.name} for candidate in candidates
+    ]
+    return _selector(
+        "SelectSelector", selector.SelectSelectorConfig(options=options, multiple=True)
+    )
+
+
+def room_schema(candidates: Sequence[ValveCandidate]) -> probatio.Schema:
+    """Return the room form of a subentry flow, over the valves of the instance."""
+    return probatio.Schema(
+        {
+            probatio.Required(CONF_NAME): _selector("TextSelector"),
+            probatio.Required(CONF_VALVES): _valve_field(candidates),
+            probatio.Required(CONF_SOURCES): probatio.All(cv.ensure_list, [SOURCE_SCHEMA]),
+            probatio.Optional(CONF_AREA_ID): _selector("AreaSelector"),
+            probatio.Optional(CONF_CALIBRATION, default=CALIBRATION_EXTERNAL): _selector(
+                "SelectSelector",
+                selector.SelectSelectorConfig(options=[CALIBRATION_EXTERNAL, CALIBRATION_NONE]),
+            ),
+            probatio.Optional(CONF_CALIBRATION_SCALE, default=DEFAULT_CALIBRATION_SCALE): _number(
+                1, 1000, 1
+            ),
+            probatio.Optional(CONF_VALVE_MODE, default=VALVE_MODE_MODULATE): _selector(
+                "SelectSelector",
+                selector.SelectSelectorConfig(options=[VALVE_MODE_MODULATE, VALVE_MODE_BOOST]),
+            ),
+            probatio.Optional(CONF_OPEN_OFFSET, default=DEFAULT_OPEN_OFFSET): _number(
+                0, 5, 0.5, "°C"
+            ),
+            probatio.Optional(CONF_MIN_TEMP, default=5.0): _number(5, 20, 0.5, "°C"),
+            probatio.Optional(CONF_MAX_TEMP, default=30.0): _number(15, 35, 0.5, "°C"),
+            probatio.Optional(CONF_HYSTERESIS, default=DEFAULT_HYSTERESIS): _number(
+                0, 2, 0.1, "°C"
+            ),
+            probatio.Optional(CONF_OFF_SETPOINT, default=DEFAULT_OFF_SETPOINT): _number(
+                5, 12, 0.5, "°C"
+            ),
+            probatio.Optional(
+                CONF_VALVE_COMMAND_INTERVAL_SECONDS,
+                default=DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
+            ): _number(0, 3600, 1, "s"),
+            probatio.Optional(CONF_WINDOW_SENSORS, default=list): _selector(
+                "EntitySelector", selector.EntitySelectorConfig(multiple=True)
+            ),
+            probatio.Optional(CONF_DEMAND_FALLBACK_SENSORS, default=list): _selector(
+                "EntitySelector", selector.EntitySelectorConfig(multiple=True)
+            ),
+            probatio.Optional(CONF_OUTDOOR_SOURCES, default=list): _selector(
+                "EntitySelector", selector.EntitySelectorConfig(multiple=True)
+            ),
+            probatio.Optional(CONF_LOCKOUT_TEMPERATURE): probatio.Any(
+                None, _number(-20, 40, 0.5, "°C")
+            ),
+        },
+        extra=probatio.ALLOW_EXTRA,
+    )
+
+
+# A simulated house derives the valve and the source from the room id, so its form is the name.
+SIM_ROOM_SCHEMA = probatio.Schema({probatio.Required(CONF_NAME): _selector("TextSelector")})
 
 HOUSE_SCHEMA = probatio.Schema(
     {
@@ -216,16 +237,18 @@ def _validate_house(options: dict[str, Any]) -> tuple[HouseConfig | None, str | 
         return None, _error_key(error)
 
 
-def _room_choice_schema(rooms: list[dict[str, Any]]) -> probatio.Schema:
-    """Return a form that picks one room of the house."""
-    choices = {str(room[CONF_ROOM_ID]): str(room[CONF_NAME]) for room in rooms}
-    return probatio.Schema({probatio.Required(CONF_ROOM_ID): probatio.In(choices)})
-
-
 class RoomClimateConfigFlow(ConfigFlow, domain=DOMAIN):
     """The house entry of one installation."""
 
     VERSION = 1
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Return the subentry types of this integration: one room each."""
+        return {SUBENTRY_TYPE_ROOM: RoomSubentryFlow}
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Create the house entry from the house form."""
@@ -245,154 +268,131 @@ class RoomClimateConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> RoomClimateOptionsFlow:
-        """Return the options flow that manages the rooms."""
+        """Return the options flow that edits the house settings."""
         return RoomClimateOptionsFlow(config_entry)
 
 
+class RoomSubentryFlow(ConfigSubentryFlow):
+    """Add one room to the house, or change the room that is already there."""
+
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+        """Add one room to the house."""
+        return await self._async_step_room("user", user_input)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Change the valves and the sources of one room."""
+        if self._reconfigure_subentry_id not in self._get_entry().subentries:
+            return self.async_abort(reason="invalid_subentry")
+        return await self._async_step_room("reconfigure", user_input)
+
+    async def _async_step_room(
+        self, step_id: str, user_input: dict[str, Any] | None
+    ) -> SubentryFlowResult:
+        """Show the room form, and save the room it carries."""
+        entry = self._get_entry()
+        exclude = self._exclude(step_id)
+        if entry.options.get(CONF_SIMULATION):
+            return self._step_simulated(entry, step_id, user_input)
+        candidates = available_valves(self.hass, entry, exclude_subentry_id=exclude)
+        if not candidates:
+            return self.async_abort(reason="no_valves")
+        if user_input is None:
+            return self.async_show_form(
+                step_id=step_id, data_schema=self._form_schema(candidates, step_id)
+            )
+        name = str(user_input.get(CONF_NAME, ""))
+        payload = _room_payload(user_input, slugify(name))
+        error = self._room_error(entry, payload, exclude)
+        if error is None:
+            return self._finish_room(entry, step_id, payload, name)
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=self._form_schema(candidates, step_id),
+            errors={"base": error},
+        )
+
+    def _step_simulated(
+        self, entry: ConfigEntry, step_id: str, user_input: dict[str, Any] | None
+    ) -> SubentryFlowResult:
+        """Show the name only, and derive the virtual valve and source from the room id."""
+        if user_input is None:
+            return self.async_show_form(step_id=step_id, data_schema=SIM_ROOM_SCHEMA)
+        name = str(user_input.get(CONF_NAME, ""))
+        room_id = slugify(name)
+        payload: dict[str, Any] = {
+            CONF_ROOM_ID: room_id,
+            CONF_NAME: name,
+            CONF_VALVES: [sim_valve_entity(room_id)],
+            CONF_SOURCES: [{SOURCE_ENTITY: sim_source_entity(room_id)}],
+        }
+        error = self._room_error(entry, payload, self._exclude(step_id))
+        if error is None:
+            return self._finish_room(entry, step_id, payload, name)
+        return self.async_show_form(
+            step_id=step_id, data_schema=SIM_ROOM_SCHEMA, errors={"base": error}
+        )
+
+    def _exclude(self, step_id: str) -> str | None:
+        """The room that a reconfigure flow must not treat as another room."""
+        if step_id != "reconfigure":
+            return None
+        return self._reconfigure_subentry_id
+
+    def _form_schema(self, candidates: Sequence[ValveCandidate], step_id: str) -> probatio.Schema:
+        """The room form, pre-filled with the room that is being changed."""
+        schema = room_schema(candidates)
+        if step_id != "reconfigure":
+            return schema
+        return self.add_suggested_values_to_schema(
+            schema, dict(self._get_reconfigure_subentry().data)
+        )
+
+    @staticmethod
+    def _room_error(entry: ConfigEntry, payload: dict[str, Any], exclude: str | None) -> str | None:
+        """Return the error key of one room form result, or None when it is sound.
+
+        The house model claims the valves and the sources of its rooms, so a room
+        that takes one already in use is refused here.
+        """
+        rooms = [
+            dict(subentry.data)
+            for subentry in entry.subentries.values()
+            if subentry.subentry_type == SUBENTRY_TYPE_ROOM and subentry.subentry_id != exclude
+        ]
+        rooms.append(payload)
+        return _validate_house({**dict(entry.options), CONF_ROOMS: rooms})[1]
+
+    def _finish_room(
+        self, entry: ConfigEntry, step_id: str, payload: dict[str, Any], name: str
+    ) -> SubentryFlowResult:
+        """Create the room, or write the change into the room that is already there."""
+        if step_id == "reconfigure":
+            return self.async_update_and_abort(
+                entry, self._get_reconfigure_subentry(), title=name, data=payload
+            )
+        return self.async_create_entry(title=name, data=payload)
+
+
 class RoomClimateOptionsFlow(OptionsFlowWithConfigEntry):
-    """Add, edit and remove rooms, and edit the house settings."""
-
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        super().__init__(config_entry)
-        self._room_id: str | None = None
-
-    def _rooms(self) -> list[dict[str, Any]]:
-        """The rooms of the options payload."""
-        rooms = self.options.get(CONF_ROOMS, [])
-        return [dict(room) for room in rooms]
+    """The house settings of one house, which the options carry."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show the menu of the options flow."""
-        return self.async_show_menu(
-            step_id="init",
-            menu_options=["add_room", "edit_room", "remove_room", "house_settings"],
-        )
-
-    async def async_step_add_room(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Add one room to the house."""
+        """Edit the house settings, the only thing the options carry."""
         if user_input is not None:
-            name = str(user_input.get(CONF_NAME, ""))
-            room = _room_payload(user_input, slugify(name))
-            return await self._async_save_rooms([*self._rooms(), room], "add_room")
-        return self.async_show_form(step_id="add_room", data_schema=ROOM_SCHEMA)
-
-    async def async_step_edit_room(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Choose the room to edit."""
-        rooms = self._rooms()
-        if not rooms:
-            return self.async_abort(reason="no_rooms")
-        if user_input is not None:
-            self._room_id = str(user_input.get(CONF_ROOM_ID, ""))
-            room = self._room(self._room_id)
-            if room is not None:
-                return self.async_show_form(
-                    step_id="edit_room_form",
-                    data_schema=self.add_suggested_values_to_schema(ROOM_SCHEMA, room),
-                )
-        return self.async_show_form(
-            step_id="edit_room",
-            data_schema=_room_choice_schema(rooms),
-            errors={"base": "invalid_room"} if user_input is not None else None,
-        )
-
-    async def async_step_edit_room_form(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Edit the room that was chosen."""
-        room_id = self._room_id or ""
-        if user_input is not None:
-            room = _room_payload(user_input, room_id)
-            rooms = [
-                room if str(existing.get(CONF_ROOM_ID, "")) == room_id else existing
-                for existing in self._rooms()
-            ]
-            return await self._async_save_rooms(rooms, "edit_room_form")
-        return self.async_show_form(
-            step_id="edit_room_form",
-            data_schema=self.add_suggested_values_to_schema(ROOM_SCHEMA, self._room(room_id)),
-        )
-
-    async def async_step_remove_room(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Remove the room that was chosen."""
-        rooms = self._rooms()
-        if not rooms:
-            return self.async_abort(reason="no_rooms")
-        if user_input is not None:
-            room_id = str(user_input.get(CONF_ROOM_ID, ""))
-            remaining = [room for room in rooms if str(room.get(CONF_ROOM_ID, "")) != room_id]
-            if len(remaining) == len(rooms):
-                return self.async_show_form(
-                    step_id="remove_room",
-                    data_schema=_room_choice_schema(rooms),
-                    errors={"base": "invalid_room"},
-                )
-            return await self._async_save_rooms(remaining, "remove_room")
-        return self.async_show_form(step_id="remove_room", data_schema=_room_choice_schema(rooms))
-
-    async def async_step_house_settings(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Edit the house settings."""
-        if user_input is not None:
-            options = {**self.options, **user_input, CONF_ROOMS: self._rooms()}
-            config, error = _validate_house(options)
+            config, error = _validate_house({**dict(self.options), **user_input, CONF_ROOMS: []})
             if config is not None:
-                return await self._async_save(config)
+                saved = config.model_dump(mode="json")
+                saved.pop(CONF_ROOMS, None)
+                return self.async_create_entry(data=saved)
             return self.async_show_form(
-                step_id="house_settings",
+                step_id="init",
                 data_schema=self._house_schema(),
                 errors={"base": error or "invalid_room"},
             )
-        return self.async_show_form(step_id="house_settings", data_schema=self._house_schema())
+        return self.async_show_form(step_id="init", data_schema=self._house_schema())
 
     def _house_schema(self) -> probatio.Schema:
         """The house form, pre-filled with the current options."""
         return self.add_suggested_values_to_schema(HOUSE_SCHEMA, self.options)
-
-    def _room(self, room_id: str) -> dict[str, Any] | None:
-        """The room payload of one room id."""
-        return next(
-            (room for room in self._rooms() if str(room.get(CONF_ROOM_ID, "")) == room_id), None
-        )
-
-    async def _async_save_rooms(
-        self, rooms: list[dict[str, Any]], step_id: str
-    ) -> ConfigFlowResult:
-        """Validate a room list, save it, and show the form again on a failure."""
-        options = {**self.options, CONF_ROOMS: rooms}
-        config, error = _validate_house(options)
-        if config is None:
-            return self.async_show_form(
-                step_id=step_id,
-                data_schema=ROOM_SCHEMA,
-                errors={"base": error or "invalid_room"},
-            )
-        return await self._async_save(config)
-
-    async def _async_save(self, config: HouseConfig) -> ConfigFlowResult:
-        """Save the options, reload the entry, and land the room devices in their areas."""
-        options = config.model_dump(mode="json")
-        self.hass.config_entries.async_update_entry(self.config_entry, options=options)
-        if self.config_entry.state is ConfigEntryState.LOADED:
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            self._assign_areas(config)
-        return self.async_create_entry(data=options)
-
-    def _assign_areas(self, config: HouseConfig) -> None:
-        """Put the device of every room into the area the room names."""
-        registry = dr.async_get(self.hass)
-        for room in config.rooms:
-            if room.area_id is None:
-                continue
-            device = registry.async_get_device_by_identifier(
-                (DOMAIN, f"{self.config_entry.entry_id}_{room.room_id}"),
-                self.config_entry.entry_id,
-            )
-            if device is not None:
-                registry.async_update_device(device.id, area_id=room.area_id)

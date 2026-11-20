@@ -27,6 +27,7 @@ async def async_get_config_entry_diagnostics(
         ),
         "watched_entities": list(coordinator.watched_entities),
         "lockout_active": coordinator.lockout_active,
+        "room_lockouts": dict(coordinator.room_lockouts),
         "master_enabled": coordinator.master_enabled,
         "override_active": coordinator.override_active,
         "boiler_on": coordinator.boiler_on,

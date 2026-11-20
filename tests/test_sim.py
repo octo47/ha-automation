@@ -9,14 +9,20 @@ from custom_components.room_climate.const import DOMAIN
 
 
 def bench_room(**overrides: object) -> dict[str, object]:
-    room: dict[str, object] = {
+    """One room subentry of the bench."""
+    data: dict[str, object] = {
         "room_id": "front_room",
         "name": "Front Room",
         "valves": ["climate.sim_front_room_valve"],
         "sources": [{"entity_id": "number.sim_front_room_room_temperature"}],
     }
-    room.update(overrides)
-    return room
+    data.update(overrides)
+    return {
+        "data": data,
+        "subentry_type": "room",
+        "title": str(data["name"]),
+        "unique_id": None,
+    }
 
 
 def sim_options(**overrides: object) -> dict[str, object]:
@@ -27,15 +33,22 @@ def sim_options(**overrides: object) -> dict[str, object]:
         "dry_run": False,
         "min_on_seconds": 0,
         "min_off_seconds": 0,
-        "rooms": [bench_room()],
     }
     payload.update(overrides)
     return payload
 
 
-async def setup_bench(hass: HomeAssistant, **overrides: object) -> MockConfigEntry:
+async def setup_bench(
+    hass: HomeAssistant,
+    *,
+    rooms: list[dict[str, object]] | None = None,
+    **overrides: object,
+) -> MockConfigEntry:
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Room Climate Bench", options=sim_options(**overrides)
+        domain=DOMAIN,
+        title="Room Climate Bench",
+        options=sim_options(**overrides),
+        subentries_data=rooms if rooms is not None else [bench_room()],
     )
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
@@ -77,7 +90,8 @@ async def test_a_real_entity_is_rejected_in_a_simulated_entry(hass: HomeAssistan
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Room Climate Bench",
-        options=sim_options(rooms=[bench_room(valves=["climate.trv_front_room"])]),
+        options=sim_options(),
+        subentries_data=[bench_room(valves=["climate.trv_front_room"])],
     )
     entry.add_to_hass(hass)
     assert not await hass.config_entries.async_setup(entry.entry_id)
