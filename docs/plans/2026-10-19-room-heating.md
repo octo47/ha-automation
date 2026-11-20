@@ -3838,6 +3838,85 @@ git commit -m "give the room flow a form the panel can render"
 
 ---
 
+### Task 16c: The house the flow writes is the house the runtime reads
+
+A correction to Task 16, from the live instance. The config flow creates the entry with
+`async_create_entry(title=config.name, data=config.model_dump(mode="json"))`, so the house
+settings land in `entry.data`. Every other reader takes them from `entry.options`:
+`HouseConfig.from_entry` validates `{**dict(entry.options), rooms}` (`models.py:164`), the room
+flow tests the simulation flag with `entry.options.get(CONF_SIMULATION)` (`config_flow.py:296`),
+the room flow validates a room against `{**dict(entry.options), rooms}` (`config_flow.py:365`),
+and the options form pre-fills from `self.options`. The entry options are empty, so the whole
+integration runs on the defaults: the operator's boiler, outdoor sources, lockout temperature and
+simulation flag are all thrown away.
+
+Measured on the instance on 2026-11-20, after two entries were created through the flow:
+
+- The bench entry was created with `simulation: true`, and it created **no** simulated entity:
+  `climate.sim_boiler` and `number.sim_outdoor_temperature` answer HTTP 404.
+- The house entry was created with the outdoor sources
+  `sensor.ws2900_v2_02_03_outdoor_temperature` (1.4 °C) and `weather.forecast_home_2` (4.1 °C);
+  `sensor.room_climate_outdoor_temperature_2` reads `unknown`, because the house has no outdoor
+  source at all.
+- No room, no shared entity, no error in the log: the entry reports `loaded` and
+  `sensor.room_climate_status_2` reads `dry_run`, which is only the default of the model.
+
+The tests never noticed, because they build the options by hand (`options=house(...)`) and hand
+them to `MockConfigEntry`; no test runs the config flow and then reads the house back from the
+entry the flow created.
+
+**Rule:** the house settings are read from the data of the entry and from its options, the
+options last, so the first form and every later change are both honoured. One function answers
+with the house of an entry, and every reader calls it.
+
+**Files:**
+- Modify: `custom_components/room_climate/models.py`, `config_flow.py`
+- Modify: `tests/test_config_flow.py`, `tests/test_subentry_flow.py`
+
+**Interfaces:**
+- Consumes: `ConfigEntry.data`, `ConfigEntry.options`, the room subentries.
+- Produces: `HouseConfig.from_entry(entry)` reads `{**entry.data, **entry.options}`, and every
+  reader of the house uses it.
+
+- [ ] **Step 1: Write the failing tests**
+
+1. `test_the_house_the_flow_creates_is_the_house_the_entry_reads`: run the house config flow with
+   a written answer, take the entry it creates, and assert that `HouseConfig.from_entry(entry)`
+   equals that answer — the boiler, the outdoor sources, the lockout temperature, the hysteresis
+   and the simulation flag.
+2. `test_the_options_form_opens_with_the_house_of_the_entry`: after a change through the options
+   flow, the form opens pre-filled with the changed house, and the runtime reads every change.
+3. `test_the_house_entry_reads_its_options_over_its_data`: a value in the data and a different
+   value in the options answer with the value of the options.
+4. `test_a_simulated_house_creates_the_simulated_boiler`: a house entry with `simulation` true
+   loads with `climate.sim_boiler` present.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/test_config_flow.py -v`
+Expected: FAIL, because the house of the flow is not the house of the entry.
+
+- [ ] **Step 3: Write the change**
+
+1. `HouseConfig.from_entry` validates the data of the entry merged with its options, the options
+   last.
+2. Every other reader of the house calls it: the room flow's simulation test, the room flow's
+   validation of a room, and the options form's pre-fill and validation.
+
+- [ ] **Step 4: Run the checks to verify they pass**
+
+Run: `make check`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate tests
+git commit -m "read the house of an entry from its data and its options"
+```
+
+---
+
 ### Task 17: The humidity of a room, and the source pickers
 
 The spec's sections 3.5, 5.4, 6.8 and 7.2. A room reads temperature sources and humidity
