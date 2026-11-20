@@ -53,8 +53,10 @@ hand, because the component runs no thermal model.
 ## Phase B — the real house
 
 1. Add the real entry, with `simulation` off. Fill the house form: `climate.heating_heat`, the
-   outdoor sources `sensor.outdoor_temperature` and `weather.forecast_home`,
-   and the defaults of the spec's section 5.2.
+   outdoor sources `sensor.ws2900_v2_02_03_outdoor_temperature` and `weather.forecast_home_2`,
+   and the defaults of the spec's section 5.2. Read the ids from the instance: `weather.forecast_home`
+   is the second forecast entity and it reads `unavailable`, so the entry names
+   `weather.forecast_home_2`.
 2. Add one room per radiator group, from **Settings → Devices and Services → Room Climate → Add
    device**. The flow lists the valves the instance holds, so pick the valves of the group: a
    room accepts more than one valve, and the list holds no valve that another room already
@@ -67,10 +69,9 @@ hand, because the component runs no thermal model.
    `climate.heating_heat`.
 7. Watch one full heating cycle per room. The boiler reaches 31 °C when a room calls, and 15 °C
    when the last room stops.
-8. Repoint every Better Thermostat card from `climate.bt_*` to `climate.room_climate_*`. The README
-   carries the mapping.
-   is in the repository [README](../README.md), and `dashboard/room-climate.yaml` is a starting
-   view.
+8. Repoint every Better Thermostat card from `climate.bt_*` to `climate.room_climate_*`. The
+   mapping of the seven rooms is in the repository [README](../README.md), and
+   `dashboard/room-climate.yaml` is a starting view.
 9. Remove every Better Thermostat entry from **Settings**, then **Devices and services**.
 10. Remove Better Thermostat from HACS.
 
@@ -98,11 +99,12 @@ confirmed, so confirm it on one valve before the component writes to ten.
 
 This is the one live write to a real valve, and the operator performs it.
 
-1. Pick one valve. `climate.trv_front_room` is the one to use.
-2. Write the value 2150 into `number.trv_front_room_external_measured_room_sensor`.
+1. Pick one valve. `climate.trv_main_bedroom` is the one to use.
+2. Write the value 2150 into `number.trv_main_bedroom_external_measured_room_sensor`.
 3. Read the value back.
-4. Watch `sensor.trv_front_room_pi_heating_demand` and `sensor.trv_front_room_local_temperature` for one
-   hour.
+4. Watch `sensor.trv_main_bedroom_pi_heating_demand` and
+   `sensor.trv_main_bedroom_local_temperature` for one hour. The name of each reading follows the
+   valve's own name, so read the three ids of the valve the operator picked from the instance.
 5. If the valve regulates on the written value, keep the `calibration` of `external_sensor` and
    the `calibration_scale` of 100 for every room. The component then writes
    `round(room_temperature × 100)` into every valve of the room.
