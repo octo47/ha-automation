@@ -3485,12 +3485,286 @@ git commit -m "package room climate for HACS and record the migration"
 
 ---
 
+### Task 15: The per-room outdoor threshold
+
+The spec's section 6.6 in revision 3. Better Thermostat holds an `outdoor_sensor` and an
+`off_temperature` per room, and the measured configuration of this house sets 20 °C in every
+room. The component must carry the same shape before the real entry is built, or the swap
+loses a rule the house had.
+
+The existing `next_lockout(active, outdoor, threshold, hysteresis)` already takes the threshold
+as an argument, so the change is the source of that argument, the latch per room, and the
+reporting.
+
+**Files:**
+- Modify: `custom_components/room_climate/models.py`, `control.py`, `coordinator.py`,
+  `climate.py`, `config_flow.py`, `translations/en.json`
+- Modify: `tests/test_models.py`, `tests/test_config_flow.py`, `tests/test_coordinator.py`,
+  `tests/test_control_decide.py`
+- Create: `tests/test_control_room_lockout.py`
+
+**Interfaces:**
+- Consumes: `HouseConfig`, `RoomConfig`, `ControlInput`, `RoomCommand`, `next_lockout`,
+  `outdoor_temperature`.
+- Produces: `RoomConfig.outdoor_sources: tuple[str, ...] = ()`,
+  `RoomConfig.lockout_temperature: float | None = None`,
+  `control.room_outdoor_sources(house: HouseConfig, room: RoomConfig) -> tuple[str, ...]`,
+  `control.room_lockout_temperature(house: HouseConfig, room: RoomConfig) -> float`,
+  `ControlInput.room_lockouts: Mapping[str, bool]`,
+  `RoomCommand.locked_out: bool`,
+  `RoomClimateCoordinator.room_lockouts: dict[str, bool]`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/test_control_room_lockout.py
+"""The lockout of one room, and the house lockout beside it."""
+
+from __future__ import annotations
+
+from custom_components.room_climate.control import (
+    decide,
+    room_lockout_temperature,
+    room_outdoor_sources,
+)
+
+
+def test_a_room_without_its_own_values_uses_the_house_values() -> None:
+    house, room = ..., ...
+    assert room_outdoor_sources(house, room) == house.outdoor_sources
+    assert room_lockout_temperature(house, room) == house.lockout_temperature
+
+
+def test_a_room_with_its_own_values_uses_them() -> None:
+    ...
+
+
+def test_one_room_locked_out_does_not_stop_the_other_room() -> None:
+    """The locked-out room closes its valves, and the other room still calls."""
+
+    output = decide(payload(room_lockouts={"front_room": True}))
+    ...
+
+
+def test_the_override_bypasses_every_room_lockout() -> None:
+    ...
+
+
+def test_an_unavailable_room_outdoor_source_locks_no_room_out() -> None:
+    ...
+```
+
+Requirements of the test file:
+
+1. A room with no `outdoor_sources` reads the house list; a room with its own reads those.
+2. A room with no `lockout_temperature` takes the house value; a room with its own takes it.
+3. A locked-out room does not call, and every valve of that room receives `off_setpoint`.
+4. A locked-out room does not demand the boiler, and it does not stop the rooms beside it.
+5. `override_active` clears the block of every room, and the house lockout as well.
+6. An unusable outdoor reading of a room starts no lockout for that room.
+7. The house lockout keeps its own meaning: the reason `lockout`, the status `locked_out`, and
+   a boiler command that the timing guard does not defer.
+8. `RoomCommand.locked_out` reports the per-room latch, so the climate entity can publish it.
+
+Extend `tests/test_models.py` with:
+
+```python
+def test_a_room_keeps_its_own_outdoor_threshold() -> None:
+    config = room(lockout_temperature=21.5, outdoor_sources=("sensor.room_outdoor",))
+    assert config.lockout_temperature == 21.5
+    assert config.outdoor_sources == ("sensor.room_outdoor",)
+
+
+def test_a_room_outdoor_threshold_outside_the_band_fails() -> None:
+    with pytest.raises(ValidationError):
+        room(lockout_temperature=41.0)
+
+
+def test_two_rooms_may_read_one_outdoor_source() -> None:
+    """The outdoor source is a reading, not a claim, so two rooms may share it."""
+    other = room("back_room", outdoor_sources=("sensor.outdoor",))
+    config = house(rooms=(room(outdoor_sources=("sensor.outdoor",)), other))
+    assert config.rooms[0].outdoor_sources == ("sensor.outdoor",)
+```
+
+Extend `tests/test_coordinator.py`: a room whose own `outdoor_sources` entity changes runs a
+cycle, and the latch of that room holds its state across two cycles inside the hysteresis band.
+
+Extend `tests/test_config_flow.py`: the room form saves `outdoor_sources` and
+`lockout_temperature`, and an empty threshold saves `None`.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/test_control_room_lockout.py tests/test_models.py -v`
+Expected: FAIL, because `room_outdoor_sources` does not exist and `RoomConfig` rejects the two
+new fields with `extra="forbid"`.
+
+- [ ] **Step 3: Write the change**
+
+```python
+# custom_components/room_climate/models.py — RoomConfig gains two fields
+
+    outdoor_sources: tuple[str, ...] = ()
+    lockout_temperature: float | None = Field(default=None, ge=-20.0, le=40.0)
+```
+
+```python
+# custom_components/room_climate/control.py — appended
+
+def room_outdoor_sources(house: HouseConfig, room: RoomConfig) -> tuple[str, ...]:
+    """Return the outdoor sources of one room: its own, or the house list."""
+    return room.outdoor_sources or house.outdoor_sources
+
+
+def room_lockout_temperature(house: HouseConfig, room: RoomConfig) -> float:
+    """Return the outdoor threshold of one room: its own, or the house value."""
+    if room.lockout_temperature is None:
+        return house.lockout_temperature
+    return room.lockout_temperature
+```
+
+`decide()` gains the per-room block: a room is blocked when the house lockout holds, or when
+the master switch is off, or when `payload.room_lockouts.get(room.room_id)` is true and the
+override is off. `RoomCommand` gains `locked_out`, which reports the per-room latch after the
+override.
+
+The coordinator builds the temperatures of every room's own outdoor sources, latches one
+lockout per room with the existing `next_lockout`, and passes `room_lockouts`. `climate.py`
+publishes `locked_out` in the attributes of the room. The room form offers both fields, and
+the translation file names them.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `make check`
+Expected: PASS, the new tests included, and no test that sleeps.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate tests docs
+git commit -m "give every room its own outdoor threshold"
+```
+
+---
+
+### Task 16: Rooms as subentries, and the valves the instance holds
+
+The spec's sections 5.2, 5.3 and 8. The operator adds a room from the integration page, and the
+flow offers the valves of the instance rather than an empty entity selector. The virtual
+thermostat is the device that is added, and a room may own several valves.
+
+The measured instance facts this task builds on:
+
+- Home Assistant 2026.10.1 carries the full subentry API: `ConfigSubentry`, `ConfigSubentryFlow`,
+  `SubentryFlowResult`, `ConfigFlow.async_get_supported_subentry_types`, the websocket command
+  `config_entries/subentries/list` and the REST route `/api/config/config_entries/subentries/flow`.
+- Ten devices carry a Hive `Radiator valve`, and each owns exactly one `climate` entity.
+  `identifiers` is `[["mqtt", "zigbee2mqtt_<ieee>"]]` and the device carries an area.
+- The Hive boiler device carries `model` `Dual channel heating and hot water thermostat` and two
+  `climate` entities, which are not valves.
+- The Better Thermostat devices carry `manufacturer` `Better Thermostat`, so they are not
+  candidates, and they leave the instance with the removal.
+
+**Files:**
+- Create: `custom_components/room_climate/discovery.py`, `tests/test_discovery.py`,
+  `tests/test_subentry_flow.py`
+- Modify: `custom_components/room_climate/config_flow.py`, `models.py`, `__init__.py`,
+  `coordinator.py`, `entity.py`, `climate.py`, `diagnostics.py`, `strings.json`,
+  `translations/en.json`, `manifest.json`
+- Modify: `tests/test_config_flow.py`, `tests/test_coordinator.py`, `tests/test_platforms.py`,
+  `tests/test_sim.py`, `tests/test_unload.py`
+
+**Interfaces:**
+- Consumes: `RoomConfig`, `HouseConfig`, the entity, device and area registries.
+- Produces: `discovery.ValveCandidate` (a frozen model: `entity_id`, `name`, `area_id`,
+  `source_entity_id`), `discovery.available_valves(hass, entry) -> tuple[ValveCandidate, ...]`,
+  `HouseConfig.from_entry(entry) -> HouseConfig`,
+  `RoomClimateConfigFlow.async_get_supported_subentry_types(entry) -> {"room": RoomSubentryFlow}`,
+  `RoomSubentryFlow` with `async_step_user` and `async_step_reconfigure`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_discovery.py`:
+
+1. A `climate` entity of a device with manufacturer `Hive` and model `Radiator valve` is a
+   candidate.
+2. A `climate` entity of the boiler device (`Dual channel heating and hot water thermostat`) is
+   not a candidate, and neither `climate.heating_heat` nor `climate.heating_water` is offered.
+3. A `climate` entity of a Better Thermostat device is not a candidate.
+4. A `climate` entity that owns `number.<object id>_external_measured_room_sensor` is a
+   candidate even when its device carries no Hive model.
+5. A `climate` entity with no device is not a candidate.
+6. A candidate carries `sensor.<valve object id>_local_temperature` as its source when the
+   entity exists, and `None` otherwise.
+7. A candidate carries the area of its device.
+8. A valve that a `room` subentry of the entry already claims is not offered.
+
+`tests/test_subentry_flow.py`:
+
+1. `async_get_supported_subentry_types` returns the type `room`.
+2. The user step offers exactly the candidates of `available_valves`, and it refuses a valve
+   that is not a candidate.
+3. One room that names two valves saves both, and the room model holds them.
+4. Two rooms of one entry yield two devices and two thermostats, and the unique id of a
+   thermostat carries its subentry id.
+5. A room name of `Front Room` yields `room_id` `front_room`, and the device takes
+   `climate.room_climate_front_room`.
+6. A simulated entry asks for the name only, and it derives `climate.sim_<room>_valve` and
+   `number.sim_<room>_room_temperature`.
+7. The reconfigure step changes the valve list of a room and leaves the other rooms alone.
+8. The options flow carries the house settings only, and it offers no room menu.
+9. Every existing test of the room list moves to the subentry path: the composition of the
+   coordinator, the platforms, the simulation house and the unload path read the rooms from
+   `entry.subentries`.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/test_discovery.py tests/test_subentry_flow.py -v`
+Expected: FAIL with `ModuleNotFoundError: custom_components.room_climate.discovery`.
+
+- [ ] **Step 3: Write the change**
+
+1. `discovery.py`: `ValveCandidate`, and `available_valves` built from the device and entity
+   registries, minus the claimed valves of the entry's `room` subentries. The module imports
+   `homeassistant.helpers.device_registry` and `entity_registry` only, so the flow and its tests
+   read one source of candidates.
+2. The room subentry flow moves the room form out of the options flow: the valve list becomes a
+   multi-select over the candidates, the name becomes a text field with the candidate's name as
+   its default, the source defaults to the candidate's `source_entity_id`, and the area defaults
+   to the candidate's area. The room fields of the spec's section 5.2 stay on the form.
+3. `HouseConfig.from_entry(entry)` assembles the rooms from the `room` subentries and the house
+   settings from the options. `HouseConfig` keeps its cross-room validation, so a hand-edited
+   subentry set still fails at load with the message that names both rooms.
+4. The options flow keeps the house settings, and it loses the room menu.
+5. The device identifier of a room carries the subentry id, so two rooms never share a device,
+   and the unique ids of its entities follow.
+6. `strings.json` and `translations/en.json` name the room flow, the valve field, the source
+   field and the area field. The subentry flow needs its own section, or the frontend shows the
+   raw keys.
+7. Bump `manifest.json` to `0.2.0`, so HACS offers the release. The tag is `v0.2.0`.
+
+- [ ] **Step 4: Run the checks to verify they pass**
+
+Run: `make check`
+Expected: PASS. Then open the integration page of the instance and confirm the **Add device**
+button, the picker of the ten valves, and one room that owns two valves.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate tests docs
+git commit -m "add a room as a subentry from the discovered valves"
+```
+
+---
+
 ## Self-review
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
-tasks 2, 11. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
-task 7. Section 6.5 → task 8. Section 6.6 → task 4. Section 6.7 → tasks 9, 12. Section 7.1 to
-7.3 → tasks 8, 10. Section 7.4 → task 13. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
+tasks 2, 11, 16. Section 5.3 (adding a room) → task 16. Section 6.1 → task 3. Section 6.2 →
+task 5. Section 6.3 → task 6. Section 6.4 → task 7. Section 6.5 → task 8. Section 6.6 → tasks 4,
+15. Section 6.7 → tasks 9, 12. Section 7.1 to 7.3 → tasks 8, 10. Section 7.4 → task 13.
+Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
 Section 9 → every task.
 
 **Review focus coverage:** item 1 → task 4. Item 2 → tasks 5, 8. Item 3 → task 9. Item 4 →

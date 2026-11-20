@@ -27,15 +27,22 @@ control to the real valves.
 
 **Phase A, the bench.** Add the integration with `simulation` on and `dry_run` on, and set
 `min_on_seconds` and `min_off_seconds` to 0, so every row of the runbook's knob table takes
-effect at once. Add one room per row of the table below, by name only: a simulated entry derives
-the virtual valve and the virtual source from the room id. Drive the bench from
-`dashboard/room-climate-bench.yaml`, then tune the weights, the hysteresis, `open_offset` and
-`lockout_hysteresis` until every row behaves as its expected column states.
+effect at once. Add one room per row of the table below from **Settings → Devices and Services →
+Room Climate Bench → Add device**; a simulated entry asks for the name only, because the
+component derives the virtual valve and the virtual source from the room id. Drive the bench
+from `dashboard/room-climate-bench.yaml`, then tune the weights, the hysteresis, `open_offset`
+and `lockout_hysteresis` until every row behaves as its expected column states.
 
-**Phase B, the real house.** Add the real entry with `simulation` off and the real valve and
-sensor ids of the table below. Confirm the feed scale on one valve first. Keep `dry_run` on for
-one day, then turn it off and disable `automation.heat_on_demand`. Repoint the eight dashboard
-cards below, then remove the eight Better Thermostat entries and Better Thermostat itself.
+**Phase B, the real house.** Add the real entry with `simulation` off, then add one room per
+radiator group from **Settings → Devices and Services → Room Climate → Add device**. The flow
+lists the valves the instance holds — the Hive TRVs — so pick them from the panel; a room accepts
+more than one valve and no valve appears in two rooms. Confirm the feed scale on one valve first.
+Keep `dry_run` on for one day, then turn it off and disable `automation.heat_on_demand`. Repoint
+the dashboard cards below, then remove the Better Thermostat entries and Better Thermostat
+itself.
+
+Every room may carry its own outdoor threshold and its own outdoor sources; a room that names
+neither reads the house value.
 
 The step-by-step procedure, the knob table, the feed-scale confirmation, the rollback and the
 fault list are in [docs/room-heating.runbook.md](docs/room-heating.runbook.md).

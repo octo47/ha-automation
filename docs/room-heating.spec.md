@@ -1,6 +1,7 @@
 # Room Climate — design and requirements
 
 Status: draft for review. Date: 2026-10-19. Revision 2: Better Thermostat is removed.
+Revision 3: the outdoor threshold is a per-room value, and the house value is its default.
 Instance: Home Assistant 2026.10.1 at `http://192.168.1.7:8123`, HACS loaded.
 Target repository: `github.com/octo47/ha-automation`.
 
@@ -30,7 +31,7 @@ other custom integration, or on any HACS repository.
 | Boiler | The Hive central-heating entity `climate.heating_heat`. |
 | Boiler ON | The component sets the boiler target to 31 °C and the mode to `heat`. |
 | Boiler OFF | The component sets the boiler target to 15 °C and the mode to `off`. |
-| Lockout | Heating is blocked because the outdoor temperature is high. |
+| Lockout | Heating is blocked because the outdoor temperature is high. Every room holds its own lockout, and the house holds one for the boiler. |
 | Cycle | One evaluation of every room and of the boiler. |
 | Dry run | The component computes commands and logs them, and sends no service call. |
 | Simulation house | The virtual valves, the virtual boiler and the knobs of section 7.4. |
@@ -121,6 +122,13 @@ reports that room as degraded.
 - `weather.forecast_home` (met.no). A second weather entity of the same account can carry
   the same name with a numeric suffix.
 
+The house names one or more sources, and every room reads them. A room may name its own
+sources and its own threshold instead, and an unset value falls back to the house value.
+
+The component keeps that shape because the installation it replaces had it: Better Thermostat
+holds an `outdoor_sensor` and an `off_temperature` per room. The measured configuration of
+this house names the weather station in one room and the threshold 20 °C in every room.
+
 ## 4. Scope
 
 ### 4.1 In scope
@@ -142,6 +150,8 @@ reports that room as degraded.
     room and one for the house.
 14. Provide a simulation house, so the operator sets every input by hand and watches the
     control loop before a real valve moves.
+15. Discover the valves of the instance, and add, change and remove a room from the
+    integration page, with the valves offered in the picker.
 
 ### 4.2 Out of scope
 
@@ -167,7 +177,8 @@ reports that room as degraded.
    switch.py        master enable, lockout override
    binary_sensor.py boiler demand, lockout, room calling
    sensor.py        room temperature, room EMA, outdoor temperature, house status
-   config_flow.py   house entry, room add, room edit, room remove
+   config_flow.py   the house entry, the house options, and the room subentry flow
+   discovery.py     the valves of the instance, and the rooms that claim them
    __init__.py      setup, unload, boiler release
    number.py        the temperature knobs of the simulation house
    sim.py           the simulation house: virtual valves, a virtual boiler, knobs
@@ -191,11 +202,13 @@ import it. No second copy of the logic may exist in an automation or in a templa
 
 ### 5.2 Configuration model
 
-One config entry holds the house. The entry options hold the room list. The options flow
-adds, edits and removes rooms.
+One config entry holds the house, and the entry options hold the house settings. One config
+subentry holds one room, so the operator adds a room from the integration page and removes a
+room there.
 
 Reason for one entry, and not one entry per room: the component must reject one valve or
-one source that two rooms claim. That check needs every room at once.
+one source that two rooms claim. That check needs every room at once, and every room of an
+entry is visible to the entry.
 
 | Field | Type | Default | Rule |
 | --- | --- | --- | --- |
@@ -236,6 +249,8 @@ one source that two rooms claim. That check needs every room at once.
 | `valve_command_interval_seconds` | int | `300` | 0 to 3600. |
 | `window_sensors` | list of entity ids | `[]` | Optional. |
 | `demand_fallback_sensors` | list of entity ids | `[]` | Optional. The `heat_required` entities. |
+| `outdoor_sources` | list of entity ids | `[]` | Optional. Empty means the house list. |
+| `lockout_temperature` | float, or none | none | Optional, −20 to 40. None means the house value. |
 
 Rules:
 
@@ -246,6 +261,33 @@ Rules:
 4. The options flow rejects a broken rule and names the two rooms.
 5. `room_id` is a slug, because the simulation house of section 7.4 builds entity ids from
    it. The room form derives the slug from the room name.
+
+### 5.3 How the operator adds a room
+
+1. The room list is the set of `room` subentries of the entry. The component reads no room
+   from the options, and the options flow carries the house settings only.
+2. The operator adds a room from the integration page: **Settings → Devices and Services →
+   Room Climate → Add device**. That button starts the subentry flow of the type `room`.
+3. The flow offers the valves of the house, so the operator picks a valve from the panel
+   instead of typing an entity id. A valve is a `climate` entity of a device whose
+   manufacturer is `Hive` and whose model starts with `Radiator valve`, or a `climate` entity
+   that owns `number.<object id>_external_measured_room_sensor`. The probe measured ten such
+   devices on this house.
+4. The flow removes a valve that a room of the same entry already claims, so one valve
+   reaches one room.
+5. The flow accepts one or more valves, because a room can hold several. Two of the measured
+   rooms hold two valves each.
+6. The room temperature source defaults to `sensor.<valve>_local_temperature` of the first
+   chosen valve, and the operator can replace it or add more than one source with a weight.
+7. The room name is a text field, and the flow offers the area of the first chosen valve as
+   the area of the room.
+8. One subentry builds one device, `Room Climate <room name>`, which carries the virtual
+   thermostat of the room. The virtual thermostat is therefore the thing the operator adds on
+   the panel, and it is the thing that owns several valves.
+9. In a simulated entry the flow asks for the name and nothing else, because the component
+   derives the virtual valve and the virtual source from the room id (section 7.4).
+10. A subentry supports reconfigure, so the operator changes the valves or the sources of a
+    room there. The removal of a subentry removes the room.
 
 ## 6. Control rules
 
@@ -335,15 +377,22 @@ Timing rules:
 
 ### 6.6 Outdoor lockout
 
-1. The component reads every configured outdoor source, and it takes the mean of the
-   usable values.
-2. The lockout starts when the mean is at or above `lockout_temperature`.
-3. The lockout stops when the mean is at or below `lockout_temperature −
-   lockout_hysteresis`.
-4. An unavailable outdoor reading must not start a lockout. Rule 4 keeps the house warm
-   when the weather station fails.
-5. The lockout overrides room demand. The valves go to `off_setpoint` while the lockout
-   holds.
+Every room holds a lockout, and the house holds one for the boiler.
+
+1. The sources of a room are its own `outdoor_sources` when it names any, and the house
+   `outdoor_sources` otherwise.
+2. The threshold of a room is its own `lockout_temperature` when it names one, and the house
+   `lockout_temperature` otherwise. The hysteresis is always the house `lockout_hysteresis`.
+3. The component reads every source of the room, and it takes the mean of the usable values.
+4. The lockout of the room starts when that mean is at or above the threshold of the room.
+5. The lockout of the room stops when the mean is at or below `threshold − lockout_hysteresis`.
+6. An unavailable outdoor reading must not start a lockout. This rule keeps a room warm when
+   its weather station fails.
+7. A locked-out room does not call, and its valves go to `off_setpoint`. The other rooms keep
+   their own state, so one room at its threshold does not stop the house.
+8. The house lockout uses the house sources and the house threshold. It stops the boiler with
+   the reason `lockout`, and it reaches the status `locked_out`.
+9. The lockout override switch bypasses the lockout of every room, and the house lockout.
 
 ### 6.7 Safety and failure behaviour
 
@@ -382,7 +431,7 @@ Climate entity rules:
 5. The entity accepts `set_temperature` and `set_hvac_mode`.
 6. Attributes: the usable source count, the room temperature, the calling state, the
    valve list, the valve targets, the calibration value, the count of unavailable valves,
-   and the degradation flag.
+   the lockout state of the room, and the degradation flag.
 
 ### 7.2 House device: the config entry
 
@@ -391,7 +440,7 @@ Climate entity rules:
 | `switch.room_climate_boiler_automation` | switch | on | Master enable. |
 | `switch.room_climate_lockout_override` | switch | off | Bypass of the outdoor lockout. |
 | `binary_sensor.room_climate_boiler_demand` | binary sensor | off | Wanted boiler state. |
-| `binary_sensor.room_climate_outdoor_lockout` | binary sensor | off | Lockout state. |
+| `binary_sensor.room_climate_outdoor_lockout` | binary sensor | off | The house lockout state. |
 | `sensor.room_climate_outdoor_temperature` | sensor, temperature | — | Mean outdoor temperature. |
 | `sensor.room_climate_house_temperature` | sensor, temperature | — | EMA of the mean of the room temperatures. |
 | `sensor.room_climate_status` | sensor, enum | `idle` | One of `heating`, `idle`, `locked_out`, `disabled`, `dry_run`, `degraded`. |
@@ -505,8 +554,9 @@ valves.
 | --- | --- | --- |
 | `number.sim_front_room_room_temperature` | 19.0 | The room calls. The valve reaches the setpoint. The boiler reaches 31 with `hvac_action` heating. |
 | the same | 21.5 | The room stops. The boiler reaches 15 with mode `off`, because the bench holds the minimum on time at 0. |
-| `number.sim_outdoor_temperature` | 19.0 | Status `locked_out`. The boiler at 15. The valves at `off_setpoint`. |
-| `switch.room_climate_lockout_override` | on | The lockout stops, and the room calls again. |
+| `number.sim_outdoor_temperature` | 19.0 | The house lockout starts. Status `locked_out`. The boiler at 15. The valves at `off_setpoint`. |
+| `switch.room_climate_lockout_override` | on | The house lockout stops, and the room calls again. |
+| the `lockout_temperature` of one room | 19.0 | That room stops and closes its valves, and the other rooms keep their state. |
 | `switch.sim_front_room_window` | on | The demand stops, and the valve closes in the same cycle. |
 | `switch.sim_front_room_offline` | on | The room reports degraded, and the cycle continues. |
 | `number.sim_front_room_valve_external_measured_room_sensor` | 2150 | The virtual valve measures 21.5, and the feed removes the bias of the local sensor. |
@@ -566,12 +616,13 @@ so a card points at a missing entity between the two steps.
 | Decision | Default taken | Alternative |
 | --- | --- | --- |
 | Source of the setpoint | The Scheduler integration sets the setpoint. This component holds no schedule. | A weekly schedule inside the component. |
-| Lockout effect | Whole house. The boiler stops, and every valve goes to `off_setpoint`. | The lockout blocks the boiler only, and the valves keep their target. |
+| Lockout effect | Per room, with the house value as the default. A locked-out room closes its valves and stops calling. The house lockout also stops the boiler. | One lockout for every room, driven by one threshold. |
 | Valve mode | `modulate`, with the calibration feed. The valve regulates its own position on the measured room temperature. | `boost`. The valve opens fully while the room calls. |
 | Runtime dependency | Keep `pydantic`, declared in the manifest. The repository rule requires a typed model at every boundary. | Replace the models with frozen dataclasses, and keep the integration free of third-party requirements. |
 | Code from Better Thermostat | Reimplement the logic, and keep this repository outside AGPL-3.0. | Copy the calibration logic, and license this repository AGPL-3.0. |
 | Repository licence | MIT. The component copies no AGPL-3.0 code, so the licence is free. | Another licence of the operator's choice. |
 | The simulation house | Inside the integration, behind `simulation`. One code path, and one install. | A separate test package, or a set of Home Assistant helpers outside the component. |
+| Where a room is configured | One config subentry per room, added from the integration page, with the valves of the instance offered in the picker. The virtual thermostat is the device the operator adds, and it can own several valves. | The room list in the entry options, with an entity selector over every `climate` entity of the instance. |
 
 The operator accepted every default on 2026-10-19. The alternative column records what the
 decision excluded.
@@ -606,3 +657,9 @@ decision excluded.
 15. On the bench, a room that calls sets its virtual valve and the virtual boiler. A room
     that stops releases both.
 16. A simulated entry rejects a room entity without the `sim_` prefix.
+17. A room whose own `lockout_temperature` is at or below the outdoor temperature stops
+    calling and closes its valves, and a room with a higher threshold keeps calling in the
+    same cycle.
+18. The integration page offers the room flow, the flow lists the unclaimed valves of the
+    instance, and one room that names two valves drives both of them.
+19. A valve that a room already claims does not appear again in the picker of the next room.

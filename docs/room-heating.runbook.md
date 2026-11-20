@@ -24,9 +24,9 @@ rejects any other entity at setup.
    takes effect at once. Row 2 of the table expects the boiler at 15 °C in the same cycle that
    the room stops calling, and the default of 300 seconds would defer that transition. Raise
    both values later to watch the guard rules of the spec's section 6.5.
-5. Add one room per row of the spec's section 3.3, and give the room its name only. A simulated
-   entry derives the virtual valve and the virtual source from the room id, so the form asks for
-   the name and nothing else.
+5. Add one room per row of the spec's section 3.3: **Settings → Devices and Services → Room
+   Climate Bench → Add device**. A simulated entry asks for the name and nothing else, because
+   the component derives the virtual valve and the virtual source from the room id.
 6. Read the computed commands in the log for one cycle.
 7. Turn `dry_run` off.
 8. Drive the bench from `dashboard/room-climate-bench.yaml` with this table. Read the state after
@@ -55,7 +55,11 @@ hand, because the component runs no thermal model.
 1. Add the real entry, with `simulation` off. Fill the house form: `climate.heating_heat`, the
    outdoor sources `sensor.outdoor_temperature` and `weather.forecast_home`,
    and the defaults of the spec's section 5.2.
-2. Add one room per radiator group, with the valves and the sources of the spec's section 3.3.
+2. Add one room per radiator group, from **Settings → Devices and Services → Room Climate → Add
+   device**. The flow lists the valves the instance holds, so pick the valves of the group: a
+   room accepts more than one valve, and the list holds no valve that another room already
+   claims. The room temperature source defaults to the local temperature of the first valve; set
+   the sources and the weights of the spec's section 3.3 where the room carries a room sensor.
 3. Confirm the scale of the feed entity on one valve. See the next section.
 4. Keep `dry_run` on. Watch the log and `sensor.room_climate_status` for one day.
 5. Turn `dry_run` off.
