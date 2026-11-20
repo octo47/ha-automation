@@ -3758,13 +3758,144 @@ git commit -m "add a room as a subentry from the discovered valves"
 
 ---
 
+### Task 17: The humidity of a room, and the source pickers
+
+The spec's sections 3.5, 5.4, 6.8 and 7.2. A room reads temperature sources and humidity
+sources, and the operator picks each one from the sensors the instance holds.
+
+Measured facts this task builds on:
+
+- Every Better Thermostat room names a `humidity_sensor` beside its `temperature_sensor`, so
+  humidity parity is a requirement of the migration and not an addition.
+- One device carries the temperature and the humidity of a room as a pair of `sensor`
+  entities, so the picker of a room usually shows the two entities of one device.
+- Some room sensors carry no area, so the list must fall back to the whole house.
+- Door, window and motion sensors publish a `device_temperature`, which is not a room.
+
+**Files:**
+- Modify: `custom_components/room_climate/models.py`, `control.py`, `coordinator.py`,
+  `climate.py`, `sensor.py`, `discovery.py`, `config_flow.py`, `sim.py`, `strings.json`,
+  `translations/en.json`, `dashboard/room-climate-bench.yaml`
+- Modify: `tests/test_models.py`, `tests/test_coordinator.py`, `tests/test_discovery.py`,
+  `tests/test_subentry_flow.py`, `tests/test_platforms.py`, `tests/test_sim.py`
+- Create: `tests/test_control_room_humidity.py`
+
+**Interfaces:**
+- Consumes: `RoomConfig`, `HouseConfig`, `discovery.ValveCandidate`, the entity and area
+  registries, `sensor_state`.
+- Produces: `RoomConfig.humidity_sources: tuple[WeightedSource, ...] = ()`,
+  `control.room_humidity(house, room, states) -> float | None`,
+  `discovery.available_sensors(hass, entry, kind) -> tuple[SensorCandidate, ...]` where `kind`
+  is `temperature` or `humidity`, and `RoomState.humidity: float | None`.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_control_room_humidity.py`:
+
+1. One humidity source reports its value; two sources report the weighted mean.
+2. A weight of zero excludes a source, and an unavailable source is ignored.
+3. No usable source yields `None`, and the room reports no humidity entity.
+4. Humidity changes no heating decision: a dry reading and a damp reading of the same room
+   yield the same valve command and the same boiler demand.
+
+`tests/test_discovery.py`:
+
+5. `available_sensors` returns the `sensor` entities of `device_class` `temperature` for
+   `kind="temperature"`, and of `device_class` `humidity` for `kind="humidity"`.
+6. An entity whose object id ends with `device_temperature` is not a candidate.
+7. An entity that a room of the same entry already claims is not a candidate.
+8. The sensors of the area of a valve come before the sensors of the other areas.
+
+`tests/test_subentry_flow.py`:
+
+9. The room form carries the humidity field, and the saved room holds the chosen humidity
+   sources with their weights.
+10. A simulated entry derives `number.sim_<room>_room_humidity` as the humidity source of the
+    room, and it writes that value, so the bench drives the humidity.
+
+`tests/test_platforms.py`:
+
+11. A room with a humidity source reports `sensor.room_climate_<room>_humidity` with the mean
+    and the unit `%`.
+12. A room with no humidity source reports no such entity, and its thermostat still reports
+    the temperature.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/test_control_room_humidity.py tests/test_discovery.py tests/test_subentry_flow.py -v`
+Expected: FAIL with `AttributeError: 'RoomConfig' object has no attribute 'humidity_sources'` or
+`ModuleNotFoundError`.
+
+- [ ] **Step 3: Write the change**
+
+1. `RoomConfig` gains `humidity_sources`, with the same rule and the same weight semantics as
+   `sources`. The uniqueness rule of the spec's section 5.2 covers it, in the subentry flow and
+   in the models.
+2. `control.room_humidity` mirrors `room_temperature`: the weighted mean of the usable
+   sources, and `None` when none is usable.
+3. The coordinator carries the value in `RoomState.humidity`, and it publishes it on the room.
+   The heating decision reads it nowhere.
+4. `discovery.available_sensors` generalises the candidate reader of Task 16: one function, a
+   `kind`, and the same exclusion rules for both. The area of the first valve of the room orders
+   the list.
+5. The room form carries the two pickers: temperature sources and humidity sources, each with a
+   weight field per source.
+6. The simulation house gains `number.sim_<room>_room_humidity`, and the simulated room reads
+   it, so the bench can drive the humidity by hand.
+7. The bench dashboard gains one humidity graph per room.
+
+- [ ] **Step 4: Run the checks to verify they pass**
+
+Run: `make check`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate tests dashboard
+git commit -m "read the humidity of a room and offer the sensors of the house"
+```
+
+---
+
+### Task 18: Cooling (a later task)
+
+**Do not build this task yet.** It waits for a cooling unit on the instance: the probe found no
+`climate` entity that offers the mode `cool`. The spec's section 6.9 fixes the shape now, so
+this task changes no rule that exists.
+
+The spec's section 6.9, plus section 4.1 item 18, the cooling rows of section 5.2, the modes of
+section 7.1 and acceptance item 22.
+
+**Files to modify when it runs:** `models.py` (`cooling_units`, `cooling_lockout_temperature`),
+`control.py` (the decision becomes `heat`, `cool` or `idle`), `coordinator.py`, `climate.py`
+(the modes and the cooling action), `config_flow.py` (the cooling picker), `discovery.py` (a
+candidate list of `climate` entities that offer `cool`), `translations/en.json`, and the tests.
+
+**The rules the tests must prove:**
+1. A room above the setpoint plus the hysteresis cools, and it stops at the setpoint minus the
+   hysteresis.
+2. A room never heats and cools at once: while it cools, its valves are at `off_setpoint` and
+   its demand reaches no boiler.
+3. The cooling command sets mode `cool` and the setpoint of the unit, and it respects
+   `min_on_seconds` and `min_off_seconds`.
+4. `cooling_lockout_temperature` blocks cooling when the outdoor temperature is at or below it,
+   and it leaves the heating lockout alone.
+5. The thermostat offers `cool` for a room with a cooling unit, `auto` for a room with both,
+   and `hvac_action` reports `cooling`.
+6. A room with no cooling unit behaves exactly as it does today, so this task breaks no
+   existing test.
+
+---
+
 ## Self-review
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
-tasks 2, 11, 16. Section 5.3 (adding a room) → task 16. Section 6.1 → task 3. Section 6.2 →
-task 5. Section 6.3 → task 6. Section 6.4 → task 7. Section 6.5 → task 8. Section 6.6 → tasks 4,
-15. Section 6.7 → tasks 9, 12. Section 7.1 to 7.3 → tasks 8, 10. Section 7.4 → task 13.
-Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
+tasks 2, 11, 16, 17. Section 5.3 (adding a room) → task 16. Section 5.4 (picking a source) →
+task 17. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
+task 7. Section 6.5 → task 8. Section 6.6 → tasks 4, 15. Section 6.7 → tasks 9, 12.
+Section 6.8 → task 17. Section 6.9 → task 18. Section 7.1 to 7.3 → tasks 8, 10, 17.
+Section 7.4 → tasks 13, 17. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
 Section 9 → every task.
 
 **Review focus coverage:** item 1 → task 4. Item 2 → tasks 5, 8. Item 3 → task 9. Item 4 →

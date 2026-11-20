@@ -2,6 +2,8 @@
 
 Status: draft for review. Date: 2026-10-19. Revision 2: Better Thermostat is removed.
 Revision 3: the outdoor threshold is a per-room value, and the house value is its default.
+Revision 4: a room reads temperature sources and humidity sources, and a room may name a
+cooling unit.
 Instance: Home Assistant 2026.10.1 at `http://192.168.1.7:8123`, HACS loaded.
 Target repository: `github.com/octo47/ha-automation`.
 
@@ -19,10 +21,13 @@ other custom integration, or on any HACS repository.
 
 | Term | Meaning |
 | --- | --- |
-| Room | A named group of valves and temperature sources. |
+| Room | A named group of valves, temperature sources and humidity sources. |
 | Valve | A `climate.*` TRV entity that accepts a target temperature. |
-| Source | A temperature entity that the component reads. |
-| Room temperature | The weighted mean of the usable sources of a room. |
+| Temperature source | A temperature entity that the component reads. |
+| Humidity source | A humidity entity that the component reads and reports. |
+| Cooling unit | A `climate.*` entity that accepts a cool mode, such as an air conditioner. |
+| Room temperature | The weighted mean of the usable temperature sources of a room. |
+| Room humidity | The weighted mean of the usable humidity sources of a room. |
 | Calling | The room needs heat now, because its temperature is below the setpoint. |
 | Setpoint | The target temperature of a room. The Scheduler sets this value. |
 | Valve target | The target temperature the component writes to a valve. |
@@ -102,15 +107,15 @@ refuses heat. The component must not write that switch.
 
 ### 3.3 The example rooms
 
-| Room | Valves | Temperature sources |
-| --- | --- | --- |
-| Front Room | `climate.trv_front_room` | `sensor.front_room_temperature`, `sensor.trv_front_room_local_temperature` |
-| Back Room | `climate.trv_back_room` | `sensor.back_room_temperature` |
-| Side Room | `climate.trv_side_room_a`, `climate.trv_side_room_b` | `sensor.side_room_temperature`, `sensor.trv_side_room_a_local_temperature`, `sensor.trv_side_room_b_local_temperature` |
+| Room | Valves | Temperature sources | Humidity sources | Cooling units |
+| --- | --- | --- | --- | --- |
+| Front Room | `climate.trv_front_room` | `sensor.front_room_temperature`, `sensor.trv_front_room_local_temperature` | `sensor.front_room_humidity` | `climate.ac_front_room` |
+| Back Room | `climate.trv_back_room` | `sensor.back_room_temperature` | `sensor.back_room_humidity` | — |
+| Side Room | `climate.trv_side_room_a`, `climate.trv_side_room_b` | `sensor.side_room_temperature`, `sensor.trv_side_room_a_local_temperature`, `sensor.trv_side_room_b_local_temperature` | `sensor.side_room_humidity` | — |
 
-The example rooms show the shape of a room: a valve list, a source list, and a weight on
-each source. The operator adds the real rooms in the config flow, and the component never
-holds a room that the operator did not add.
+The example rooms show the shape of a room: a valve list, a source list, a weight on each
+source, a humidity list and a cooling list. The operator adds the real rooms in the config
+flow, and the component never holds a room that the operator did not add.
 
 A valve can be missing, and a valve can be `unavailable`. The operator confirms such a
 valve in the config flow. A room with no available valve heats nothing, and the component
@@ -129,11 +134,25 @@ The component keeps that shape because the installation it replaces had it: Bett
 holds an `outdoor_sensor` and an `off_temperature` per room. The measured configuration of
 this house names the weather station in one room and the threshold 20 °C in every room.
 
+### 3.5 The room sensors of a house
+
+A room sensor arrives as a pair: one device publishes both the temperature and the humidity of
+its room, so a room names the two entities of one device. The pairing is the reason the room
+model carries a humidity list beside its temperature list.
+
+Not every room holds a room sensor. A room without one reads the local temperature of its
+valve, `sensor.<valve>_local_temperature`, and reports no humidity.
+
+The house also holds door, window and motion sensors. Such a device publishes a
+`device_temperature`, which is the temperature of the hardware and not the temperature of a
+room. The component must never offer that entity as a source.
+
 ## 4. Scope
 
 ### 4.1 In scope
 
-1. Group one or more valves and one or more temperature sources into a room.
+1. Group one or more valves, one or more temperature sources and one or more humidity
+   sources into a room.
 2. Weight each source. A weight of zero excludes the source.
 3. Compute the room temperature as the weighted mean of the usable sources.
 4. Publish one virtual thermostat entity per room for the dashboard and for the Scheduler.
@@ -152,12 +171,19 @@ this house names the weather station in one room and the threshold 20 °C in eve
     control loop before a real valve moves.
 15. Discover the valves of the instance, and add, change and remove a room from the
     integration page, with the valves offered in the picker.
+16. Read the humidity of a room from one or more humidity sources, and report it on the room
+    device.
+17. Offer the temperature and humidity sensors of the instance in the source pickers, in the
+    same way as the valves.
+18. Name a cooling unit in a room, and cool that room. This is a later task: section 6.9 fixes
+    the shape now, and the task runs when a cooling unit exists.
 
 ### 4.2 Out of scope
 
 1. Hot water control. The Hive schedule keeps that duty.
 2. Weather compensation of the flow temperature. The boiler is on or off.
-3. Cooling.
+3. Cooling, until the cooling task of the plan runs. Section 6.9 fixes the shape now, so that
+   task changes no rule that exists.
 4. A computed valve position. The valve regulates its own position.
 5. Valve families other than the Hive TRV.
 6. Per-room weekly schedules inside this component. The Scheduler integration sets the
@@ -236,7 +262,8 @@ entry is visible to the entry.
 | `name` | string | — | Required. |
 | `area_id` | area id | none | Optional. The component assigns the device to this area. |
 | `valves` | list of entity ids, climate domain | — | One or more. |
-| `sources` | list of `{entity_id, weight}` | — | One or more. |
+| `sources` | list of `{entity_id, weight}` | — | One or more temperature sources. |
+| `humidity_sources` | list of `{entity_id, weight}` | `[]` | Optional humidity sources. |
 | `weight` | float | `1.0` | Greater than 0. |
 | `calibration` | select | `external_sensor` | `external_sensor` or `none`. |
 | `calibration_scale` | int | `100` | 1 to 1000. Feed units for 1 °C. |
@@ -251,10 +278,13 @@ entry is visible to the entry.
 | `demand_fallback_sensors` | list of entity ids | `[]` | Optional. The `heat_required` entities. |
 | `outdoor_sources` | list of entity ids | `[]` | Optional. Empty means the house list. |
 | `lockout_temperature` | float, or none | none | Optional, −20 to 40. None means the house value. |
+| `cooling_units` | list of entity ids, climate domain | `[]` | Optional. A later task: section 6.9. |
+| `cooling_lockout_temperature` | float, or none | none | Optional, −20 to 40. None means no cooling lockout. |
 
 Rules:
 
-1. Two rooms must not share a valve. Two rooms must not share a source.
+1. Two rooms must not share a valve, a temperature source or a humidity source. Two rooms may
+   read the same outdoor source, because the outdoor temperature belongs to the house.
 2. The `valve_mode` of `modulate` requires the `calibration` of `external_sensor`.
    Reason: the valve and the component must agree on the room temperature.
 3. A room with an empty `valves` list is invalid.
@@ -288,6 +318,20 @@ Rules:
    derives the virtual valve and the virtual source from the room id (section 7.4).
 10. A subentry supports reconfigure, so the operator changes the valves or the sources of a
     room there. The removal of a subentry removes the room.
+
+### 5.4 How the operator picks a source
+
+1. The form offers the sensors of the instance, so the operator picks a temperature or a
+   humidity sensor from the panel instead of typing an entity id.
+2. A candidate is a `sensor` entity whose `device_class` is `temperature` for a temperature
+   source, and `humidity` for a humidity source.
+3. An entity whose object id ends with `device_temperature` is not a candidate: it reports the
+   hardware of a contact or a motion sensor, not a room.
+4. The sensors of the area of the first chosen valve come first in the list, because a room
+   sensor usually sits in the area of its room. The remaining sensors of the house follow, so a
+   sensor that carries no area stays reachable.
+5. A source that a room of the same entry already claims is not offered again.
+6. The weight of every source is a field of the form, and its default is 1.
 
 ## 6. Control rules
 
@@ -409,6 +453,41 @@ Every room holds a lockout, and the house holds one for the boiler.
    write to a wrong valve is a heating fault, so a test must prove the target of every
    command.
 
+### 6.8 Humidity
+
+1. A room reads its `humidity_sources` as the weighted mean of the usable ones, in the same
+   way as its temperature sources.
+2. The room reports that mean as `sensor.room_climate_<room>_humidity` and as an attribute of
+   its thermostat. A room that names no humidity source reports no humidity entity.
+3. The humidity of a room takes no part in the heating decision. Reason: a Hive valve regulates
+   on temperature alone, and the installation this component replaces made no use of humidity
+   either. The reading exists for the operator and for the cooling rule of section 6.9.
+4. An unavailable humidity source is ignored, in the same way as an unavailable temperature
+   source.
+
+### 6.9 Cooling
+
+This section fixes the shape of cooling, so that the task which builds it changes no rule that
+already exists. The instance holds no cooling unit yet, so the task waits.
+
+1. A room may name one or more `cooling_units`: `climate` entities that offer the mode `cool`.
+2. A room decides one of three things: `heat`, `cool` or `idle`. It calls for cool when its
+   temperature is at or above the setpoint plus the hysteresis, and it stops when its
+   temperature is at or below the setpoint minus the hysteresis.
+3. A room never heats and cools at once. While a room cools, it closes its valves to
+   `off_setpoint` and takes no part in the boiler demand.
+4. Cooling is per room. The house has no cooling plant, so
+   `binary_sensor.room_climate_boiler_demand` stays a heating decision.
+5. A cooling command sets the mode `cool` and the setpoint of the cooling unit, and it obeys
+   `min_on_seconds` and `min_off_seconds` in the same way as the boiler.
+6. `cooling_lockout_temperature` blocks cooling when the outdoor temperature is at or below it,
+   with the same hysteresis. None means no cooling lockout, and the heating lockout of section
+   6.6 is unaffected either way.
+7. The thermostat of a room publishes the modes `off` and `heat`, and it adds `cool` when the
+   room names a cooling unit and `auto` when it names both a valve and a cooling unit. In
+   `auto` the room decides from its temperature and its setpoint.
+8. `hvac_action` is `cooling` while the room cools.
+
 ## 7. Entities
 
 ### 7.1 Room device: `Room Climate <Room Name>`
@@ -424,14 +503,16 @@ Climate entity rules:
 1. The device of a room is named `<house name> <room name>`, and the entity ids follow it.
    The house entry keeps the name `Room Climate`, so the room of the Front Room yields
    `climate.room_climate_front_room`.
-2. `hvac_modes` are `off` and `heat`.
-2. `current_temperature` is the weighted room temperature.
-3. `target_temperature` is the setpoint. The entity restores it after a restart.
-4. `hvac_action` is `heating` when the room calls, and `idle` otherwise.
-5. The entity accepts `set_temperature` and `set_hvac_mode`.
-6. Attributes: the usable source count, the room temperature, the calling state, the
-   valve list, the valve targets, the calibration value, the count of unavailable valves,
-   the lockout state of the room, and the degradation flag.
+2. `hvac_modes` are `off` and `heat`. A room that names a cooling unit also offers `cool`, and
+   it offers `auto` when it names both a valve and a cooling unit (section 6.9).
+3. `current_temperature` is the weighted room temperature.
+4. `target_temperature` is the setpoint. The entity restores it after a restart.
+5. `hvac_action` is `heating` when the room calls for heat, `cooling` while it cools, and `idle`
+   otherwise.
+6. The entity accepts `set_temperature` and `set_hvac_mode`.
+7. Attributes: the usable source count, the room temperature, the room humidity, the calling
+   state, the valve list, the valve targets, the calibration value, the count of unavailable
+   valves, the lockout state of the room, and the degradation flag.
 
 ### 7.2 House device: the config entry
 
@@ -451,6 +532,7 @@ Per room, in addition to the climate entity:
 | --- | --- | --- |
 | `sensor.room_climate_<room>_temperature` | sensor, temperature | The room temperature for a graph. |
 | `sensor.room_climate_<room>_temperature_ema` | sensor, temperature | The smoothed room temperature for a graph. |
+| `sensor.room_climate_<room>_humidity` | sensor, humidity | The room humidity. Absent when the room names no humidity source. |
 | `binary_sensor.room_climate_<room>_calling` | binary sensor | The demand latch for a graph. |
 
 ### 7.3 Dashboard
@@ -478,8 +560,8 @@ it cannot start the boiler.
 Rules:
 
 1. The house field `simulation` turns the bench on for one config entry.
-2. In a simulated entry the component derives the valve and the source of each room from the
-   room id. The room form asks for the name only.
+2. In a simulated entry the component derives the valve, the temperature source and the
+   humidity source of each room from the room id. The room form asks for the name only.
 3. A simulated entry must not name an entity outside the `sim_` prefix. The component
    rejects such an entity at setup.
 4. A simulated entry can run with `dry_run` off. It sends its commands to the virtual valves
@@ -494,6 +576,7 @@ Per room:
 | --- | --- | --- |
 | `climate.sim_<room>_valve` | climate | The virtual valve. Its target is the valve command. |
 | `number.sim_<room>_room_temperature` | number, temperature | The room temperature. The operator sets it, and it is the source of the room. |
+| `number.sim_<room>_room_humidity` | number, humidity | The room humidity. The operator sets it, and it is the humidity source of the room. |
 | `number.sim_<room>_valve_local_temperature` | number, temperature | The sensor of the valve itself, with its warm bias. |
 | `number.sim_<room>_valve_external_measured_room_sensor` | number | The feed entity. The component writes it when the calibration is on. |
 | `sensor.sim_<room>_valve_position` | sensor, % | The position the virtual valve computes. |
@@ -623,6 +706,9 @@ so a card points at a missing entity between the two steps.
 | Repository licence | MIT. The component copies no AGPL-3.0 code, so the licence is free. | Another licence of the operator's choice. |
 | The simulation house | Inside the integration, behind `simulation`. One code path, and one install. | A separate test package, or a set of Home Assistant helpers outside the component. |
 | Where a room is configured | One config subentry per room, added from the integration page, with the valves of the instance offered in the picker. The virtual thermostat is the device the operator adds, and it can own several valves. | The room list in the entry options, with an entity selector over every `climate` entity of the instance. |
+| Where a room reads its sensors | From the temperature and humidity sensors of the instance, offered in the picker of the form, with the sensors of the room's area first. | A free entity selector over every entity of the instance. |
+| Humidity | A room reads its humidity sources and reports their mean. The heating decision ignores it. | No humidity support, because the installation this component replaces made no use of it. |
+| Cooling | Designed now in section 6.9 and built later, when a cooling unit exists. A room decides its own cooling, and the boiler demand stays a heating decision. | Build cooling with the first release, or leave it out of the design and change the model later. |
 
 The operator accepted every default on 2026-10-19. The alternative column records what the
 decision excluded.
@@ -663,3 +749,10 @@ decision excluded.
 18. The integration page offers the room flow, the flow lists the unclaimed valves of the
     instance, and one room that names two valves drives both of them.
 19. A valve that a room already claims does not appear again in the picker of the next room.
+20. A room that names one temperature source and one humidity source reports the weighted mean
+    of each, and its humidity entity follows the humidity source.
+21. A room that names no humidity source reports no humidity entity, and its thermostat still
+    works.
+22. A room that names a cooling unit cools it when the room is above the setpoint plus the
+    hysteresis, closes its own valves, and adds nothing to the boiler demand. This criterion
+    belongs to the cooling task of the plan.
