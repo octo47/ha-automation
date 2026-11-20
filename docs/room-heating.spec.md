@@ -321,17 +321,26 @@ Rules:
 
 ### 5.4 How the operator picks a source
 
-1. The form offers the sensors of the instance, so the operator picks a temperature or a
-   humidity sensor from the panel instead of typing an entity id.
-2. A candidate is a `sensor` entity whose `device_class` is `temperature` for a temperature
-   source, and `humidity` for a humidity source.
-3. An entity whose object id ends with `device_temperature` is not a candidate: it reports the
-   hardware of a contact or a motion sensor, not a room.
-4. The sensors of the area of the first chosen valve come first in the list, because a room
-   sensor usually sits in the area of its room. The remaining sensors of the house follow, so a
-   sensor that carries no area stays reachable.
-5. A source that a room of the same entry already claims is not offered again.
-6. The weight of every source is a field of the form, and its default is 1.
+1. The form offers the temperature sources of the instance, so the operator picks one from the
+   panel instead of typing an entity id.
+2. A candidate is a `sensor` entity whose device class is `temperature`. A `sensor` whose object
+   id ends with `device_temperature` is not a candidate: it reports the hardware of a contact or
+   a motion sensor, not a room.
+3. A source that a room of the same entry already claims is not offered again.
+4. The form takes the room in two steps: the first step takes the name, the valves and the
+   tuning of the room, and the second takes the sources. The split exists because the source
+   list follows the valves: the sensors of the area of the first chosen valve come first, and
+   the remaining sensors of the house follow, so a sensor that carries no area stays reachable.
+   Home Assistant builds one step from one submission, so the first step must be known before
+   the second is built.
+5. Every field must survive the serialization that Home Assistant runs before it sends a form
+   to the frontend. A list of nested schemas does not survive it: the flow of revision 2
+   measured `ValueError: unable to serialize schema` and an HTTP 500 in the log of the
+   instance. A picker built from `SelectOptionDict` values, or from an `EntitySelector`,
+   survives it, and a test must hold that line.
+6. When the operator picks more than one source, a third step asks the weight of each, because
+   the weight of a source is a field of the form. A room with one source keeps the weight 1, and
+   that step does not appear.
 
 ## 6. Control rules
 

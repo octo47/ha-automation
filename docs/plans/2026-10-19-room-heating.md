@@ -3758,6 +3758,86 @@ git commit -m "add a room as a subentry from the discovered valves"
 
 ---
 
+### Task 16b: The room form that the panel renders
+
+A correction to Task 16, from the live instance. The room form declares its sources as
+`probatio.All(cv.ensure_list, [SOURCE_SCHEMA])`, a list of nested schemas. Home Assistant
+serializes every form with `probatio.to_field_list(schema, custom_serializer=cv.custom_serializer)`
+before it sends it to the frontend, and that call cannot serialize a list of schemas. Measured
+on the instance on 2026-11-20, through `POST /api/config/config_entries/subentries/flow`:
+
+```
+ValueError: unable to serialize schema: [<Schema({'entity_id': <EntitySelector ...>,
+                                                   'weight': Coerce(float, msg=None)}, extra=PREVENT_EXTRA, required=False)>]
+```
+
+The request returned HTTP 500, so the **Add device** button of the integration page cannot open
+the room form at all. No test covers the serialization, because the tests submit form data
+directly and never ask Home Assistant to render the form.
+
+**Files:**
+- Modify: `custom_components/room_climate/config_flow.py`, `discovery.py`, `strings.json`,
+  `translations/en.json`
+- Modify: `tests/test_subentry_flow.py`, `tests/test_discovery.py`
+
+**Interfaces:**
+- Consumes: `ValveCandidate`, the entity registry, the device registry, the area registry.
+- Produces: `discovery.SensorCandidate` (`entity_id`, `name`, `area_id`) and
+  `discovery.available_temperature_sources(hass, entry, *, first_area=None,
+  exclude_subentry_id=None) -> tuple[SensorCandidate, ...]`; the room flow steps `user`,
+  `sources` and `weights` (and `reconfigure`, which uses the same two steps).
+
+- [ ] **Step 1: Write the failing tests**
+
+1. `test_the_room_form_renders_for_the_frontend`: take the schema of the first room step and run
+   `probatio.to_field_list(schema, custom_serializer=cv.custom_serializer)`; the call must not
+   raise, and the field names must hold `name`, `valves` and the room tuning fields. This is the
+   exact call that failed on the instance.
+2. `test_the_sources_step_offers_the_sensors_of_the_area_first`: with a valve in an area and two
+   sensors in another area, the source step lists the area sensors before the others.
+3. `test_a_source_another_room_claims_is_not_offered`.
+4. `test_a_device_temperature_is_not_a_source`.
+5. `test_two_sources_ask_for_their_weights`: two picked sources return a `weights` step, and the
+   submitted weights reach the stored room; one picked source stores the weight 1 and never
+   shows the step.
+6. The room the flow stores carries `sources` as a list of `{entity_id, weight}`.
+7. The simulated entry still asks for the name only.
+8. Every existing room test moves to the two-step shape.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/test_subentry_flow.py -v`
+Expected: FAIL with `ValueError: unable to serialize schema`.
+
+- [ ] **Step 3: Write the change**
+
+1. `discovery.available_temperature_sources`: a `sensor` whose device class is `temperature`,
+   minus an object id that ends with `device_temperature`, minus a source another room of the
+   entry claims, ordered by the area of `first_area` and then by entity id.
+2. The first step keeps the name, the valves, the area and the tuning fields. The second step
+   carries the source picker, built from `SensorCandidate` values. The third step appears only
+   when the operator picked more than one source, and it asks one weight per picked source.
+3. The flow holds the first step's answer between steps, and it validates the full room payload
+   once, in the step that finishes the flow.
+4. `strings.json` and `translations/en.json` name the three steps and every new field. The two
+   files stay identical.
+
+- [ ] **Step 4: Run the checks to verify they pass**
+
+Run: `make check`
+Expected: PASS. Then `POST /api/config/config_entries/subentries/flow` with the handler
+`[<entry_id>, "room"]` must answer `200` with a field list, and the **Add device** button of the
+integration page must open the room form.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate tests
+git commit -m "give the room flow a form the panel can render"
+```
+
+---
+
 ### Task 17: The humidity of a room, and the source pickers
 
 The spec's sections 3.5, 5.4, 6.8 and 7.2. A room reads temperature sources and humidity
