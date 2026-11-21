@@ -325,7 +325,9 @@ Rules:
    reaches one room.
 5. The flow accepts one or more valves, because a room can hold several. Two of the measured
    rooms hold two valves each. It also accepts none, which builds a valve-less room of section
-   6.11, and it then refuses the room unless a temperature source is named.
+   6.11, and it then refuses the room unless a temperature source is named. The form stands even
+   when every valve of the house is already claimed by another room: the picker is then empty,
+   and the room is valve-less.
 6. The room temperature source defaults to `sensor.<valve>_local_temperature` of the first
    chosen valve, and the operator can replace it or add more than one source with a weight.
    With no valve chosen there is no default, so the flow requires the operator to pick a
@@ -885,7 +887,8 @@ decision excluded.
     value reports `setpoint_source: schedule`; a room on the fallback reports `setpoint_source:
     fallback`.
 30. A room with no valve and one temperature source is accepted, appears as
-    `climate.room_climate_<room>`, reports `degraded` false, and holds no valve target.
+    `climate.room_climate_<room>`, reports `degraded` false, and holds no valve target. It is
+    accepted also when every valve of the house is already claimed by another room.
 31. That room, held at 25 °C while its source reads 22.3 °C, calls, and the house demand turns
     the boiler on. When the room reaches 25.0 °C plus the hysteresis the room stops and the
     boiler stops, honouring `min_on_seconds` and `min_off_seconds`.

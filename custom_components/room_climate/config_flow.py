@@ -459,8 +459,8 @@ class RoomSubentryFlow(ConfigSubentryFlow):
         if HouseConfig.from_entry(entry).simulation:
             return self._step_simulated(entry, step_id, user_input)
         candidates = available_valves(self.hass, entry, exclude_subentry_id=self._exclude(step_id))
-        if not candidates:
-            return self.async_abort(reason="no_valves")
+        # A room may name no valve, so a house whose every valve another room claims still
+        # takes a room: the picker is then empty and the room drives the boiler alone.
         if user_input is None:
             return self.async_show_form(
                 step_id=step_id, data_schema=self._valve_schema(candidates, step_id)

@@ -4261,6 +4261,11 @@ answers `fallback_demand` when the room temperature is `None`, which is false fo
 `demand_fallback_sensors`, so a valve-less room with no reading holds no demand and never holds
 the boiler on.
 
+A room may also be added to a house whose every valve another room already claims: the flow
+must show the room form with an empty picker, and not abort on `no_valves`. The measurement of
+2026-11-21 found this: all ten valves of the house were claimed, and the two bathrooms could not
+be added until the abort was removed.
+
 **Files:** `custom_components/room_climate/models.py` (the `valves` field accepts an empty tuple,
 and validation refuses a valve-less room with no source), `config_flow.py` (the valve picker
 becomes optional; the refusal names the missing source), `coordinator.py` (a valve-less room

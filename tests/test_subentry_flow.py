@@ -247,14 +247,26 @@ async def test_the_user_step_refuses_a_valve_another_room_claims(
         await submit(hass, result["flow_id"], first_form("Back Room", ["climate.trv_front_room"]))
 
 
-async def test_the_user_step_aborts_when_no_free_valve_is_left(
+async def test_a_house_whose_valves_are_all_claimed_still_takes_a_room(
     hass: HomeAssistant, hive_entry: MockConfigEntry
 ) -> None:
+    """Every valve of the house is claimed, and the valve-less room is added all the same."""
     add_valve(hass, hive_entry, "trv_front_room")
+    add_sensor(hass, "bathroom_temperature", name="Bathroom Sensor")
     entry = await setup_house(hass, rooms=[room_subentry("front_room", ["climate.trv_front_room"])])
     result = await start_user_step(hass, entry)
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "no_valves"
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert offered_valves(result) == []
+
+    result = await submit(hass, result["flow_id"], first_form("Bathroom", []))
+    assert result["step_id"] == "sources"
+    result = await submit(hass, result["flow_id"], {"sources": ["sensor.bathroom_temperature"]})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["valves"] == []
+    room = HouseConfig.from_entry(entry).rooms[-1]
+    assert room.room_id == "bathroom"
+    assert room.valves == ()
 
 
 async def test_the_sources_step_offers_the_sensors_of_the_area_first(

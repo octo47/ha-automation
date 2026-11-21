@@ -100,8 +100,7 @@
         "shared_entity": "Two rooms claim one valve or one source."
       },
       "abort": {
-        "invalid_subentry": "The room is no longer there.",
-        "no_valves": "This house holds no free valve to give a room."
+        "invalid_subentry": "The room is no longer there."
       }
     }
   },
