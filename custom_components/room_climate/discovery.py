@@ -6,12 +6,13 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_DEVICE_CLASS
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pydantic import BaseModel, ConfigDict
 
-from .const import CONF_SOURCES, SUBENTRY_TYPE_ROOM
+from .const import CONF_SOURCES, DOMAIN, SUBENTRY_TYPE_ROOM
 
 HIVE_MANUFACTURER = "Hive"
 HIVE_VALVE_MODEL = "Radiator valve"
@@ -156,6 +157,25 @@ def _source_area(entity: er.RegistryEntry, devices: dr.DeviceRegistry) -> str | 
     return device.area_id if device is not None else None
 
 
+def _device_class(hass: HomeAssistant, entity: er.RegistryEntry) -> str | None:
+    """Return the device class of one entity: the state of the entity first.
+
+    The sensors of a house often declare the device class on their state and not in the
+    entity registry, so the state leads the registry, which is the fallback.
+    """
+    state = hass.states.get(entity.entity_id)
+    if state is not None:
+        device_class = state.attributes.get(ATTR_DEVICE_CLASS)
+        if device_class is not None:
+            return str(device_class)
+    return entity.device_class or entity.original_device_class
+
+
+def _component_entry_ids(hass: HomeAssistant) -> set[str]:
+    """Return the entry ids of this component, whose entities a room must not read."""
+    return {entry.entry_id for entry in hass.config_entries.async_entries(DOMAIN)}
+
+
 def available_temperature_sources(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -165,22 +185,26 @@ def available_temperature_sources(
 ) -> tuple[SensorCandidate, ...]:
     """Return the temperature sensors the room flow may offer for one entry.
 
-    A candidate is a `sensor` entity whose device class is `temperature`, read from
-    the entity registry. An entity whose object id ends with `device_temperature`
-    reports the hardware of a contact or a motion sensor and not a room, so it is
-    left out. A source that another room of the entry claims is left out too. The
-    sensors of `first_area` come first, so the sensor of the room's own area leads
-    the list, and each group is ordered by entity id.
+    A candidate is a `sensor` entity whose device class is `temperature`, read from the
+    state of the entity and then from the entity registry. An entity of this component is
+    never a candidate, because a room that read it would read the output of the component
+    as its own input. An entity whose object id ends with `device_temperature` reports the
+    hardware of a contact or a motion sensor and not a room, so it is left out. A source
+    that another room of the entry claims is left out too. The sensors of `first_area` come
+    first, so the sensor of the room's own area leads the list, and each group is ordered by
+    entity id.
     """
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
     claimed = claimed_sources(entry, exclude_subentry_id=exclude_subentry_id)
+    own_entries = _component_entry_ids(hass)
     candidates: list[SensorCandidate] = []
     for entity in entities.entities.values():
         if entity.domain != SENSOR_DOMAIN or entity.entity_id in claimed:
             continue
-        device_class = entity.device_class or entity.original_device_class
-        if device_class != TEMPERATURE_DEVICE_CLASS:
+        if entity.config_entry_id in own_entries:
+            continue
+        if _device_class(hass, entity) != TEMPERATURE_DEVICE_CLASS:
             continue
         if _object_id(entity.entity_id).endswith(DEVICE_TEMPERATURE_SUFFIX):
             continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
@@ -52,6 +53,7 @@ def add_entity(
     original_name: str | None = None,
     original_device_class: str | None = None,
     area_id: str | None = None,
+    config_entry: ConfigEntry | None = None,
 ) -> str:
     """Add one entity to the registry, and return its entity id."""
     registry = er.async_get(hass)
@@ -63,6 +65,7 @@ def add_entity(
         device_id=device_id,
         original_name=original_name,
         original_device_class=original_device_class,
+        config_entry=config_entry,
     )
     if area_id is not None:
         registry.async_update_entity(entry.entity_id, area_id=area_id)
@@ -93,6 +96,7 @@ def add_sensor(
     original_name: str | None = None,
     original_device_class: str = TEMPERATURE,
     area_id: str | None = None,
+    config_entry: ConfigEntry | None = None,
 ) -> str:
     """Add one sensor of the house, and return its entity id."""
     return add_entity(
@@ -103,6 +107,7 @@ def add_sensor(
         original_name=original_name,
         original_device_class=original_device_class,
         area_id=area_id,
+        config_entry=config_entry,
     )
 
 
@@ -232,6 +237,35 @@ def test_a_sensor_of_another_device_class_is_not_a_source(hass: HomeAssistant, h
 def test_a_sensor_without_a_device_class_is_not_a_source(hass: HomeAssistant, hive_entry) -> None:
     add_sensor(hass, "front_room_temperature", original_device_class=None)
     assert available_temperature_sources(hass, room_entry(hass)) == ()
+
+
+def test_a_source_is_read_from_the_state_of_the_entity(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature", original_device_class=None)
+    hass.states.async_set("sensor.front_room_temperature", "21.4", {"device_class": TEMPERATURE})
+    sources = available_temperature_sources(hass, room_entry(hass))
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
+
+
+def test_the_state_of_an_entity_leads_its_registry_entry(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature", original_device_class=HUMIDITY)
+    hass.states.async_set("sensor.front_room_temperature", "21.4", {"device_class": TEMPERATURE})
+    sources = available_temperature_sources(hass, room_entry(hass))
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
+
+
+def test_a_source_of_the_component_itself_is_not_offered(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature")
+    entry = room_entry(hass)
+    add_sensor(hass, "room_climate_house_temperature", config_entry=entry)
+    add_sensor(hass, "room_climate_front_room_temperature", config_entry=entry)
+    sources = available_temperature_sources(hass, entry)
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
+
+
+def test_a_source_of_another_component_is_offered(hass: HomeAssistant, hive_entry) -> None:
+    add_sensor(hass, "front_room_temperature", config_entry=hive_entry)
+    sources = available_temperature_sources(hass, room_entry(hass))
+    assert [source.entity_id for source in sources] == ["sensor.front_room_temperature"]
 
 
 def test_a_device_temperature_is_not_a_source(hass: HomeAssistant, hive_entry) -> None:
