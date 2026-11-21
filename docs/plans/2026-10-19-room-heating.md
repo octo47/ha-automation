@@ -3917,6 +3917,69 @@ git commit -m "read the house of an entry from its data and its options"
 
 ---
 
+### Task 16d: The picker the house fills
+
+A correction to Task 16b, from the live instance. `available_temperature_sources` reads the device
+class from the entity registry, `entity.device_class or entity.original_device_class`. Measured on
+the instance on 2026-11-20, over the websocket `config/entity_registry/list` and `/api/states`:
+
+| Where the device class lives | Sensors of the house with `temperature` |
+| --- | --- |
+| The entity registry | 0 |
+| The entity state | 44 |
+
+Not one of the registry entries of this house declares a device class, because the MQTT sensors of
+the house declare the class on their state. The room form therefore offers **nothing**, and the
+tests cannot see it: their fixtures register the class in the registry, which this house does not do.
+
+The same measurement names a second fault. Four of the 44 are entities of the `room_climate`
+component itself: `sensor.room_climate_outdoor_temperature`, `sensor.room_climate_house_temperature`
+and the `sensor.room_climate_<room>_temperature` of a room. A room that reads one of them reads the
+output of this component as its own input, so the room temperature would depend on the mean the room
+itself feeds.
+
+**Rule:** the device class of an entity is read from its state, and the field of the entity registry
+is the fallback. A room never reads an entity of this component.
+
+**Files:**
+- Modify: `custom_components/room_climate/discovery.py`, `tests/test_discovery.py`
+
+**Interfaces:**
+- Produces: the source picker of a room offers every `sensor` of the house whose **state** carries
+  the device class `temperature`, minus the entities of this component, minus `device_temperature`,
+  minus a source another room claims.
+
+- [ ] **Step 1: Write the failing tests**
+
+1. `test_a_source_is_read_from_the_state_of_the_entity`: an entity with no device class in the
+   registry and `device_class: temperature` on its state is offered.
+2. `test_a_source_of_the_component_itself_is_not_offered`: an entity that belongs to a `room_climate`
+   entry is not offered, and the room temperature of a room is not offered either.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `uv run pytest tests/test_discovery.py -v`
+Expected: FAIL, because the picker of the house is empty.
+
+- [ ] **Step 3: Write the change**
+
+1. Read the device class from the state of the entity, with the registry as the fallback.
+2. Skip an entity whose `config_entry_id` belongs to a `room_climate` entry.
+
+- [ ] **Step 4: Run the checks to verify they pass**
+
+Run: `make check`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add custom_components/room_climate tests
+git commit -m "read the device class of a source from its state"
+```
+
+---
+
 ### Task 17: The humidity of a room, and the source pickers
 
 The spec's sections 3.5, 5.4, 6.8 and 7.2. A room reads temperature sources and humidity
