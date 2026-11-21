@@ -19,7 +19,7 @@ cards:
       - entity: binary_sensor.sim_boiler_firing
       - entity: number.sim_outdoor_temperature
       - entity: sensor.room_climate_status
-      - entity: switch.room_climate_boiler_automation
+      - entity: switch.room_climate_bench_enabled
       - entity: switch.room_climate_lockout_override
 
   # One card per room: the virtual valve, its position, the three knobs and the two switches.

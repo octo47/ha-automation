@@ -21,7 +21,7 @@ cards:
       - entity: sensor.room_climate_house_temperature
       - entity: binary_sensor.room_climate_boiler_demand
       - entity: binary_sensor.room_climate_outdoor_lockout
-      - entity: switch.room_climate_boiler_automation
+      - entity: switch.room_climate_enabled
       - entity: switch.room_climate_lockout_override
       - entity: climate.heating_heat
 

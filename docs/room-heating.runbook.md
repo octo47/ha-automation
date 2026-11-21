@@ -193,15 +193,16 @@ valve or start the real boiler.
 ## What to look at when nothing happens
 
 - `sensor.room_climate_status`. `dry_run` means the component logs its commands and sends no
-  service call. `disabled` means the master switch `switch.room_climate_boiler_automation` is
-  off. `locked_out` means the mean outdoor temperature is at or above `lockout_temperature`.
+  service call. `disabled` means the master switch `switch.room_climate_enabled` is off.
+  `locked_out` means the mean outdoor temperature is at or above `lockout_temperature`.
   `degraded` means every room reports a failure. `idle` and `heating` are the two working
   states.
-- Degraded rooms. The attributes of `climate.room_climate_<room>` carry `degraded`,
-  `usable_sources`, `valves_unavailable`, `valve_targets` and `window_open`. A room with no
-  usable source and no `demand_fallback_sensors` entity that is on holds its valves at
-  `off_setpoint`, so it heats nothing. `binary_sensor.room_climate_<room>_calling` is the
-  demand latch.
+- Degraded rooms. `binary_sensor.room_climate_<room>_degraded` is `on` when a valve of the room
+  is unavailable, and the class of the sensor is `problem`. The attributes of
+  `climate.room_climate_<room>` carry `degraded`, `usable_sources`, `valves_unavailable`,
+  `valve_targets` and `window_open`. A room with no usable source and no
+  `demand_fallback_sensors` entity that is on holds its valves at `off_setpoint`, so it heats
+  nothing. `binary_sensor.room_climate_<room>_calling` is the demand latch.
 - Dry run. `dry_run` is an option of the house entry and not a switch. Turn it off in the
   options flow, at the **House settings** step, before the component commands a valve.
 - The boiler's minimum on and off times. `min_on_seconds` and `min_off_seconds` default to 300.
