@@ -1,7 +1,7 @@
 {
   "domain": "room_climate",
   "name": "Room Climate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "documentation": "https://github.com/octo47/ha-automation",
   "issue_tracker": "https://github.com/octo47/ha-automation/issues",
   "codeowners": ["@octo47"],
