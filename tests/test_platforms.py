@@ -225,3 +225,34 @@ async def test_the_master_switch_is_named_enabled(hass: HomeAssistant) -> None:
     assert state is not None
     assert state.attributes["friendly_name"] == "Room Climate Enabled"
     assert hass.states.get("switch.room_climate_boiler_automation") is None
+
+
+async def test_a_valve_less_room_is_a_thermostat_with_no_valve(hass: HomeAssistant) -> None:
+    """A room with no valve carries a target, commands the boiler, and no valve at all."""
+    await setup_entry(hass, dry_run=False, rooms=[room_subentry("bathroom", "Bathroom", valves=[])])
+    hass.states.async_set("sensor.bathroom_temperature", "22.3")
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_bathroom", "temperature": 25.0},
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("climate.room_climate_bathroom")
+    assert state is not None
+    assert state.attributes["current_temperature"] == 22.3
+    assert state.attributes["temperature"] == 25.0
+    assert state.attributes["valves"] == []
+    assert state.attributes["valve_targets"] == {}
+    assert state.attributes["degraded"] is False
+    assert state.attributes["hvac_action"] == "heating"
+
+    boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
+    assert boiler and boiler[-1]["temperature"] == 31.0
+
+    valve_calls = [
+        call
+        for call in calls(hass, "climate", "set_temperature")
+        if str(call.get("entity_id", "")).startswith("climate.trv_")
+    ]
+    assert valve_calls == []

@@ -247,7 +247,12 @@ def _room_command(
         window_open,
         _is_fallback_demand(payload, room),
     )
-    calling = calling and not room_locked and len(unavailable_valves) < len(room.valves)
+    # A room with no valve is the virtual thermostat of a space the house heats directly,
+    # so it keeps its demand; the "no available valve" rule applies only to a room that
+    # holds valves and cannot command one of them.
+    if room.valves and len(unavailable_valves) == len(room.valves):
+        calling = False
+    calling = calling and not room_locked
     elapsed = (
         (payload.now - runtime.updated_at).total_seconds()
         if runtime.updated_at is not None
@@ -268,6 +273,8 @@ def _room_command(
         room_temperature=temperature,
         ema_temperature=ema,
         usable_sources=usable,
+        # A room with no valve is never degraded for the absence of one; it is degraded
+        # only when it carries no usable reading, of any kind of room.
         degraded=usable == 0 or bool(unavailable_valves),
         valves_unavailable=len(unavailable_valves),
         valve_targets=valve_targets(

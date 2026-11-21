@@ -161,7 +161,7 @@ def room_schema(candidates: Sequence[ValveCandidate]) -> probatio.Schema:
     return probatio.Schema(
         {
             probatio.Required(CONF_NAME): _selector("TextSelector"),
-            probatio.Required(CONF_VALVES): _valve_field(candidates),
+            probatio.Optional(CONF_VALVES, default=list): _valve_field(candidates),
             probatio.Optional(CONF_AREA_ID): _selector("AreaSelector"),
             probatio.Optional(CONF_CALIBRATION, default=CALIBRATION_EXTERNAL): _selector(
                 "SelectSelector",
@@ -350,6 +350,8 @@ def _error_key(error: ValidationError) -> str:
         message = str(detail.get("msg", ""))
         if "claimed by" in message or "is used by" in message:
             return "shared_entity"
+        if "no temperature source" in message:
+            return "no_source"
     return "invalid_room"
 
 

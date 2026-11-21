@@ -66,11 +66,34 @@ def test_house_rejects_two_rooms_with_one_room_id() -> None:
     assert "room_id front_room" in str(error.value)
 
 
-def test_a_room_needs_one_valve_and_one_source() -> None:
-    with pytest.raises(ValidationError):
-        room(valves=())
+def test_a_room_may_name_no_valve() -> None:
+    """A room with no valve is the virtual thermostat of a space the house heats."""
+    config = room(valves=())
+    assert config.valves == ()
+    assert len(config.sources) == 1
+
+
+def test_a_room_needs_one_source() -> None:
     with pytest.raises(ValidationError):
         room(sources=())
+
+
+def test_a_valve_less_room_must_name_a_source() -> None:
+    """A room with no valve and no source has no reading, so it could never stop."""
+    with pytest.raises(ValidationError) as error:
+        room(valves=(), sources=())
+    assert "names no valve and no temperature source" in str(error.value)
+
+
+def test_the_house_accepts_a_room_with_no_valve() -> None:
+    config = house(rooms=(room("bathroom", valves=()),))
+    assert config.rooms[0].valves == ()
+
+
+def test_two_valve_less_rooms_do_not_share_a_valve() -> None:
+    """An empty valve list claims no valve, so two valve-less rooms are sound."""
+    config = house(rooms=(room("bathroom", valves=()), room("shower_room", valves=())))
+    assert [room.valves for room in config.rooms] == [(), ()]
 
 
 def test_house_rejects_one_valve_in_two_rooms() -> None:

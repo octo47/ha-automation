@@ -23,7 +23,7 @@
       }
     },
     "error": {
-      "invalid_room": "A room needs at least one valve and at least one source.",
+      "invalid_room": "A room needs at least one temperature source.",
       "shared_entity": "Two rooms claim one valve or one source."
     },
     "abort": {
@@ -95,7 +95,8 @@
         }
       },
       "error": {
-        "invalid_room": "A room needs at least one valve and at least one source.",
+        "invalid_room": "A room needs at least one temperature source.",
+        "no_source": "A room with no valve needs at least one temperature source.",
         "shared_entity": "Two rooms claim one valve or one source."
       },
       "abort": {
@@ -127,7 +128,7 @@
       }
     },
     "error": {
-      "invalid_room": "A room needs at least one valve and at least one source.",
+      "invalid_room": "A room needs at least one temperature source.",
       "shared_entity": "Two rooms claim one valve or one source."
     }
   },

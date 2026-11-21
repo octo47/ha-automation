@@ -282,6 +282,68 @@ def test_the_house_average_is_the_mean_of_the_room_averages() -> None:
     assert output.house_ema_temperature == pytest.approx(20.5)
 
 
+def test_a_valve_less_room_reaches_the_boiler_alone() -> None:
+    """A room with no valve holds a target and commands the boiler, and nothing else."""
+    config = house(rooms=(room("bathroom", valves=()), room("back_room")))
+    output = decide(
+        payload(
+            house=config,
+            temperatures={
+                "sensor.bathroom_temperature": 22.3,
+                "sensor.back_room_temperature": 22.0,
+                "sensor.outdoor": 8.0,
+            },
+            runtimes=(runtime("bathroom", 25.0), runtime("back_room", 21.0)),
+        )
+    )
+    bathroom = next(command for command in output.rooms if command.room_id == "bathroom")
+    assert bathroom.calling is True
+    assert bathroom.degraded is False
+    assert bathroom.valve_targets == {}
+    assert bathroom.calibration_values == {}
+    assert output.boiler.turn_on is True
+    assert output.boiler.reason == "room_demand"
+
+
+def test_a_valve_less_room_stops_at_the_target_plus_the_hysteresis() -> None:
+    config = house(rooms=(room("bathroom", valves=()),))
+    holding = RuntimeRoom(
+        room_id="bathroom", target_temperature=25.0, hvac_mode="heat", calling=True
+    )
+
+    def cycling(temperature: float) -> bool:
+        output = decide(
+            payload(
+                house=config,
+                temperatures={"sensor.bathroom_temperature": temperature, "sensor.outdoor": 8.0},
+                runtimes=(holding,),
+            )
+        )
+        return next(command for command in output.rooms if command.room_id == "bathroom").calling
+
+    assert cycling(25.2) is True
+    assert cycling(25.3) is False
+
+
+def test_a_valve_less_room_without_a_reading_stops_the_boiler() -> None:
+    config = house(rooms=(room("bathroom", valves=()),))
+    output = decide(
+        payload(
+            house=config,
+            temperatures={"sensor.bathroom_temperature": None, "sensor.outdoor": 8.0},
+            runtimes=(
+                RuntimeRoom(
+                    room_id="bathroom", target_temperature=25.0, hvac_mode="heat", calling=True
+                ),
+            ),
+        )
+    )
+    bathroom = next(command for command in output.rooms if command.room_id == "bathroom")
+    assert bathroom.calling is False
+    assert bathroom.valve_targets == {}
+    assert output.boiler.turn_on is False
+
+
 @pytest.mark.parametrize(
     ("previous", "value", "elapsed", "expected"),
     [

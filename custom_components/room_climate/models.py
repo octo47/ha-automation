@@ -68,8 +68,8 @@ class RoomConfig(BaseModel):
     room_id: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
     subentry_id: str | None = None
     name: str = Field(min_length=1)
-    valves: tuple[str, ...] = Field(min_length=1)
-    sources: tuple[TemperatureSource, ...] = Field(min_length=1)
+    valves: tuple[str, ...] = ()
+    sources: tuple[TemperatureSource, ...] = ()
     area_id: str | None = None
     calibration: Literal["external_sensor", "none"] = CALIBRATION_EXTERNAL
     calibration_scale: int = Field(default=DEFAULT_CALIBRATION_SCALE, ge=1, le=1000)
@@ -89,6 +89,10 @@ class RoomConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_room(self) -> Self:
+        if not self.sources:
+            if not self.valves:
+                raise ValueError(f"room {self.name} names no valve and no temperature source")
+            raise ValueError(f"room {self.name} names no temperature source")
         if self.valve_mode == VALVE_MODE_MODULATE and self.calibration == CALIBRATION_NONE:
             raise ValueError(
                 f"room {self.name} cannot use valve_mode modulate without the calibration feed"

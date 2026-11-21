@@ -451,6 +451,40 @@ async def test_a_room_may_name_two_valves(hass: HomeAssistant, hive_entry: MockC
     )
 
 
+async def test_a_room_may_be_added_with_no_valve(
+    hass: HomeAssistant, hive_entry: MockConfigEntry
+) -> None:
+    """The valve picker accepts none, and the room drives the boiler alone."""
+    add_valve(hass, hive_entry, "trv_front_room")
+    add_sensor(hass, "bathroom_temperature", name="Bathroom Sensor")
+    entry = await setup_house(hass)
+    result = await add_room(
+        hass,
+        entry,
+        name="Bathroom",
+        valves=[],
+        sources=["sensor.bathroom_temperature"],
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["valves"] == []
+    assert result["data"]["room_id"] == "bathroom"
+    assert HouseConfig.from_entry(entry).rooms[0].valves == ()
+
+
+async def test_a_valve_less_room_without_a_source_is_refused(
+    hass: HomeAssistant, hive_entry: MockConfigEntry
+) -> None:
+    """A room with no valve and no source is refused with the error key of the form."""
+    add_valve(hass, hive_entry, "trv_front_room")
+    entry = await setup_house(hass)
+    result = await start_user_step(hass, entry)
+    result = await submit(hass, result["flow_id"], first_form("Bathroom", []))
+    assert result["step_id"] == "sources"
+    result = await submit(hass, result["flow_id"], {"sources": []})
+    assert result["type"] is FlowResultType.FORM
+    assert result.get("errors", {}).get("base") == "no_source"
+
+
 async def test_the_room_form_saves_the_outdoor_fields(
     hass: HomeAssistant, hive_entry: MockConfigEntry
 ) -> None:
