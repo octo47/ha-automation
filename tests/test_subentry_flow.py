@@ -166,6 +166,12 @@ def offered_sources(result) -> list[str]:
     return [option["value"] for option in validator.config["options"]]
 
 
+def offered_labels(result, field: str) -> list[str]:
+    """The labels of the picker of one shown form."""
+    validator = result["data_schema"].schema[field]
+    return [option["label"] for option in validator.config["options"]]
+
+
 def test_the_flow_supports_the_room_subentry() -> None:
     entry = MockConfigEntry(domain=DOMAIN, options={})
     assert RoomClimateConfigFlow.async_get_supported_subentry_types(entry) == {
@@ -367,6 +373,57 @@ async def test_two_sources_ask_for_their_weights(
     assert [(source.entity_id, source.weight) for source in stored] == [
         ("sensor.back_room_temperature", 3.0),
         ("sensor.front_room_temperature", 1.0),
+    ]
+
+
+async def test_the_pickers_name_a_sensor_in_the_house(
+    hass: HomeAssistant, hive_entry: MockConfigEntry, area_registry: ar.AreaRegistry
+) -> None:
+    """Two sensors of one vendor name are labelled by their area, in both steps."""
+    front = area_registry.async_get_or_create("Front Room")
+    back = area_registry.async_get_or_create("Back Room")
+    add_valve(hass, hive_entry, "trv_front_room")
+    front_device = add_device(
+        hass, hive_entry, "front_sensor", area_id=front.id, name="Temperature Sensor"
+    )
+    back_device = add_device(
+        hass, hive_entry, "back_sensor", area_id=back.id, name="Temperature Sensor"
+    )
+    add_entity(
+        hass,
+        "sensor",
+        "front_room_temperature",
+        device_id=front_device,
+        original_name="Temperature",
+        original_device_class="temperature",
+    )
+    add_entity(
+        hass,
+        "sensor",
+        "back_room_temperature",
+        device_id=back_device,
+        original_name="Temperature",
+        original_device_class="temperature",
+    )
+    entry = await setup_house(hass)
+    result = await start_user_step(hass, entry)
+    flow_id = result["flow_id"]
+    result = await submit(hass, flow_id, first_form("Front Room", ["climate.trv_front_room"]))
+    assert result["step_id"] == "sources"
+    assert sorted(offered_labels(result, "sources")) == [
+        "Back Room · Temperature Sensor · Temperature",
+        "Front Room · Temperature Sensor · Temperature",
+    ]
+    result = await submit(
+        hass,
+        flow_id,
+        {"sources": ["sensor.back_room_temperature", "sensor.front_room_temperature"]},
+    )
+    assert result["step_id"] == "weights"
+    fields = probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
+    assert [field["name"] for field in fields] == [
+        "Back Room · Temperature Sensor · Temperature",
+        "Front Room · Temperature Sensor · Temperature",
     ]
 
 

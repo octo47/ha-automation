@@ -13,8 +13,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
 from custom_components.room_climate.discovery import (
+    SensorCandidate,
+    ValveCandidate,
     available_temperature_sources,
     available_valves,
+    picker_labels,
 )
 
 HIVE_ENTRY_DOMAIN = "mqtt"
@@ -30,6 +33,7 @@ def add_device(
     manufacturer: str | None = None,
     model: str | None = None,
     area_id: str | None = None,
+    name: str | None = None,
 ) -> str:
     """Add one device to the registry, and return its id."""
     registry = dr.async_get(hass)
@@ -38,6 +42,7 @@ def add_device(
         identifiers={(HIVE_ENTRY_DOMAIN, key)},
         manufacturer=manufacturer,
         model=model,
+        name=name,
     )
     if area_id is not None:
         registry.async_update_device(device.id, area_id=area_id)
@@ -331,3 +336,105 @@ def test_a_source_carries_the_area_of_its_entity_when_its_device_has_none(
 def test_a_source_carries_the_name_of_its_entity(hass: HomeAssistant, hive_entry) -> None:
     add_sensor(hass, "front_room_temperature", original_name="Front Room Sensor")
     assert available_temperature_sources(hass, room_entry(hass))[0].name == "Front Room Sensor"
+
+
+def test_a_source_carries_the_area_name_and_the_device_name(
+    hass: HomeAssistant, hive_entry, area_registry: ar.AreaRegistry
+) -> None:
+    """A picker candidate carries the names a label is built from."""
+    area = area_registry.async_get_or_create("Front Room")
+    device_id = add_device(hass, hive_entry, "room_sensor", area_id=area.id)
+    add_sensor(hass, "front_room_temperature", device_id=device_id, original_name="Temperature")
+    candidate = available_temperature_sources(hass, room_entry(hass))[0]
+    assert candidate.area_name == "Front Room"
+    assert candidate.device_name == "Zigbee2MQTT"
+
+
+def test_a_valve_carries_the_name_of_its_device(hass: HomeAssistant, hive_entry) -> None:
+    device_id = add_device(
+        hass,
+        hive_entry,
+        "trv_front_room",
+        manufacturer="Hive",
+        model="Radiator valve TRV",
+        name="Front Valve",
+    )
+    add_entity(hass, "climate", "trv_front_room", device_id=device_id)
+    assert available_valves(hass, room_entry(hass))[0].device_name == "Front Valve"
+
+
+def sensor_candidate(
+    entity_id: str, name: str, *, area_name: str | None = None, device_name: str | None = None
+) -> SensorCandidate:
+    """One source candidate of a picker, without a house to build it from."""
+    return SensorCandidate(
+        entity_id=entity_id, name=name, area_id=None, area_name=area_name, device_name=device_name
+    )
+
+
+def valve_candidate(
+    entity_id: str, name: str, *, area_name: str | None = None, device_name: str | None = None
+) -> ValveCandidate:
+    """One valve candidate of a picker, without a house to build it from."""
+    return ValveCandidate(
+        entity_id=entity_id,
+        name=name,
+        area_id=None,
+        area_name=area_name,
+        device_name=device_name,
+        source_entity_id=None,
+    )
+
+
+def test_two_sensors_of_one_name_in_two_areas_carry_different_labels() -> None:
+    """Two sensors of one vendor name are told apart by the area of the entity."""
+    labels = picker_labels(
+        [
+            sensor_candidate("sensor.front_temperature", "Temperature", area_name="Front Room"),
+            sensor_candidate("sensor.back_temperature", "Temperature", area_name="Back Room"),
+        ]
+    )
+    assert labels["sensor.front_temperature"] == "Front Room · Temperature"
+    assert labels["sensor.back_temperature"] == "Back Room · Temperature"
+
+
+def test_a_sensor_whose_device_carries_a_name_names_it() -> None:
+    """A generic entity name is qualified by the name of its device."""
+    labels = picker_labels(
+        [sensor_candidate("sensor.room_temperature", "Temperature", device_name="Room Sensor")]
+    )
+    assert labels["sensor.room_temperature"] == "Room Sensor · Temperature"
+
+
+def test_a_generic_name_with_nothing_to_qualify_it_falls_back_to_its_entity_id() -> None:
+    """A valve whose device carries no name and whose entity carries no area takes its id."""
+    labels = picker_labels(
+        [
+            valve_candidate("climate.trv_a", "Radiator valve"),
+            valve_candidate("climate.trv_b", "Radiator valve"),
+        ]
+    )
+    assert labels["climate.trv_a"] == "climate.trv_a"
+    assert labels["climate.trv_b"] == "climate.trv_b"
+
+
+def test_two_entries_that_would_read_the_same_fall_back_to_their_entity_ids() -> None:
+    """Two rows of one picker never read the same, even of one area and one device."""
+    labels = picker_labels(
+        [
+            sensor_candidate(
+                "sensor.front_temperature",
+                "Temperature",
+                area_name="Front Room",
+                device_name="Zigbee2MQTT",
+            ),
+            sensor_candidate(
+                "sensor.back_temperature",
+                "Temperature",
+                area_name="Front Room",
+                device_name="Zigbee2MQTT",
+            ),
+        ]
+    )
+    assert labels["sensor.front_temperature"] == "sensor.front_temperature"
+    assert labels["sensor.back_temperature"] == "sensor.back_temperature"

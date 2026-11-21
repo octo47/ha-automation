@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_DEVICE_CLASS
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pydantic import BaseModel, ConfigDict
@@ -24,6 +25,15 @@ TEMPERATURE_DEVICE_CLASS = "temperature"
 DEVICE_TEMPERATURE_SUFFIX = "device_temperature"
 SOURCE_ENTITY = "entity_id"
 
+LABEL_SEPARATOR = " · "
+
+# A name built only of these words says nothing about which entity it is: the vendor of
+# this house names ten of its sensors `Temperature`, and its derived sensors
+# `Temperature EMA` and `Temperature EMA 1h`, and a Hive valve is a `Radiator valve`.
+GENERIC_WORDS = frozenset(
+    {"temperature", "humidity", "radiator", "valve", "trv", "ema", "1h", "6h", "12h", "24h"}
+)
+
 
 class ValveCandidate(BaseModel):
     """One valve a room may name, and what the room form derives from it."""
@@ -33,6 +43,8 @@ class ValveCandidate(BaseModel):
     entity_id: str
     name: str
     area_id: str | None
+    area_name: str | None
+    device_name: str | None
     source_entity_id: str | None
 
 
@@ -44,6 +56,55 @@ class SensorCandidate(BaseModel):
     entity_id: str
     name: str
     area_id: str | None
+    area_name: str | None
+    device_name: str | None
+
+
+def _is_generic(name: str) -> bool:
+    """Return whether one entity name says nothing about which entity it is.
+
+    A generic name repeats across the house, so an area and a device name are what tell
+    two entities of that name apart.
+    """
+    words = name.casefold().split()
+    return bool(words) and all(word in GENERIC_WORDS for word in words)
+
+
+def _candidate_label(candidate: ValveCandidate | SensorCandidate) -> str:
+    """Return the label one candidate would carry on its own.
+
+    The label names the entity in the house and not only the entity: the area of the
+    entity, then the name of its device when the name of the entity is generic, then the
+    name of the entity. A generic name that neither an area nor a device name qualifies
+    names nothing in the house, so the entity id stands instead.
+    """
+    parts: list[str] = []
+    if candidate.area_name:
+        parts.append(candidate.area_name)
+    if _is_generic(candidate.name):
+        if candidate.device_name:
+            parts.append(candidate.device_name)
+        if not parts:
+            return candidate.entity_id
+    return LABEL_SEPARATOR.join([*parts, candidate.name])
+
+
+def picker_labels(
+    candidates: Sequence[ValveCandidate | SensorCandidate],
+) -> dict[str, str]:
+    """Return the label of every entry of one picker, keyed by entity id.
+
+    One function decides the label of the valve picker, the source picker and the weights
+    step. Two entries that would read the same fall back to their entity ids, so no two
+    rows of one picker read the same.
+    """
+    drafts = {candidate.entity_id: _candidate_label(candidate) for candidate in candidates}
+    counts: dict[str, int] = {}
+    for label in drafts.values():
+        counts[label] = counts.get(label, 0) + 1
+    return {
+        entity_id: entity_id if counts[label] > 1 else label for entity_id, label in drafts.items()
+    }
 
 
 def _object_id(entity_id: str) -> str:
@@ -121,6 +182,7 @@ def available_valves(
     """
     devices = dr.async_get(hass)
     entities = er.async_get(hass)
+    areas = ar.async_get(hass)
     claimed = claimed_valves(entry, exclude_subentry_id=exclude_subentry_id)
     candidates: list[ValveCandidate] = []
     for entity in entities.entities.values():
@@ -141,19 +203,43 @@ def available_valves(
                 entity_id=entity.entity_id,
                 name=entity.name or entity.original_name or entity.entity_id,
                 area_id=device.area_id,
+                area_name=_area_name(areas, device.area_id),
+                device_name=_device_name(device),
                 source_entity_id=source if entities.async_get(source) is not None else None,
             )
         )
     return tuple(sorted(candidates, key=lambda candidate: candidate.entity_id))
 
 
-def _source_area(entity: er.RegistryEntry, devices: dr.DeviceRegistry) -> str | None:
-    """Return the area of one source: the area of its entity, or of its device."""
-    if entity.area_id is not None:
-        return entity.area_id
-    if entity.device_id is None:
+def _area_name(areas: ar.AreaRegistry, area_id: str | None) -> str | None:
+    """Return the name of one area, or None when there is no such area."""
+    if area_id is None:
         return None
-    device = devices.async_get(entity.device_id)
+    area = areas.async_get_area(area_id)
+    return area.name if area is not None else None
+
+
+def _device_name(device: dr.AnyDeviceEntry | None) -> str | None:
+    """Return the name of one device: the operator's name first, then the given name."""
+    if device is None:
+        return None
+    return device.name_by_user or device.name
+
+
+def _source_house(
+    entity: er.RegistryEntry, devices: dr.DeviceRegistry
+) -> tuple[str | None, str | None]:
+    """Return the area id and the device name of one source.
+
+    The area of the entity leads, and the area of its device is the fallback.
+    """
+    device = devices.async_get(entity.device_id) if entity.device_id is not None else None
+    area_id = entity.area_id if entity.area_id is not None else _device_area(device)
+    return area_id, _device_name(device)
+
+
+def _device_area(device: dr.AnyDeviceEntry | None) -> str | None:
+    """Return the area of one device, or None when there is no such device."""
     return device.area_id if device is not None else None
 
 
@@ -196,6 +282,7 @@ def available_temperature_sources(
     """
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
+    areas = ar.async_get(hass)
     claimed = claimed_sources(entry, exclude_subentry_id=exclude_subentry_id)
     own_entries = _component_entry_ids(hass)
     candidates: list[SensorCandidate] = []
@@ -208,11 +295,14 @@ def available_temperature_sources(
             continue
         if _object_id(entity.entity_id).endswith(DEVICE_TEMPERATURE_SUFFIX):
             continue
+        area_id, device_name = _source_house(entity, devices)
         candidates.append(
             SensorCandidate(
                 entity_id=entity.entity_id,
                 name=entity.name or entity.original_name or entity.entity_id,
-                area_id=_source_area(entity, devices),
+                area_id=area_id,
+                area_name=_area_name(areas, area_id),
+                device_name=device_name,
             )
         )
     ordered = sorted(

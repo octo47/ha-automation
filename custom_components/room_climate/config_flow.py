@@ -76,6 +76,7 @@ from .discovery import (
     ValveCandidate,
     available_temperature_sources,
     available_valves,
+    picker_labels,
 )
 from .models import HouseConfig, RoomConfig, house_settings
 from .sim import sim_source_entity, sim_valve_entity
@@ -122,11 +123,14 @@ def _number(minimum: float, maximum: float, step: float, unit: str | None = None
 def _picker_field(candidates: Sequence[ValveCandidate | SensorCandidate]) -> Any:
     """Return a multi-select over the candidates of the instance.
 
-    The label of an option is the name of its entity, and the value is the entity id,
-    so the operator reads a name and the flow stores an entity id.
+    The label of an option names its entity in the house, so two candidates of one
+    vendor name are told apart, and the value is the entity id, so the operator reads a
+    label and the flow stores an entity id.
     """
+    labels = picker_labels(candidates)
     options: list[selector.SelectOptionDict] = [
-        {"value": candidate.entity_id, "label": candidate.name} for candidate in candidates
+        {"value": candidate.entity_id, "label": labels[candidate.entity_id]}
+        for candidate in candidates
     ]
     return _selector(
         "SelectSelector", selector.SelectSelectorConfig(options=options, multiple=True)
@@ -209,15 +213,12 @@ def source_schema(candidates: Sequence[SensorCandidate]) -> probatio.Schema:
 def weight_labels(candidates: Sequence[SensorCandidate]) -> dict[str, str]:
     """Return the label of every weight box, and the entity id it stands for.
 
-    The panel labels a field with its name when no translation exists, so the name of
-    the sensor labels its box. Two sensors of one name cannot share a box, so the
-    second one takes its entity id as its label.
+    The panel labels a field with its name when no translation exists, so the label a
+    source carries in the picker labels its box too, and no two boxes of one step read
+    the same.
     """
-    labels: dict[str, str] = {}
-    for candidate in candidates:
-        label = candidate.name if candidate.name not in labels else candidate.entity_id
-        labels[label] = candidate.entity_id
-    return labels
+    labels = picker_labels(candidates)
+    return {labels[candidate.entity_id]: candidate.entity_id for candidate in candidates}
 
 
 def weight_schema(labels: Mapping[str, str]) -> probatio.Schema:
