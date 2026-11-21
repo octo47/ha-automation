@@ -4162,7 +4162,8 @@ acceptance items 23 to 27.
   time changes, and give every room its setpoint.
 - Modify: `custom_components/room_climate/climate.py` — the manual override, and the attributes
   `setpoint_source`, `schedule_group` and `next_change`.
-- Modify: `custom_components/room_climate/models.py`, `const.py`, `sensor.py` (the
+- Modify: `custom_components/room_climate/models.py` (the `fallback_setpoint` house field),
+  `const.py`, `config_flow.py` (the number field of that house setting), `sensor.py` (the
   `schedule_error` diagnostic) and `translations/en.json`.
 - Modify: `tests/test_coordinator.py`, `tests/test_platforms.py`, `tests/conftest.py`.
 
@@ -4195,8 +4196,10 @@ acceptance items 23 to 27.
 - [ ] **Step 8: Commit** — `git commit -m "hold the setpoint of a room in one schedule file"`
 
 **The rules the tests must prove:**
-1. The setpoint of a room comes from the file and from nowhere else, and a room with no
-   setpoint holds no demand.
+1. The setpoint of a room comes from the file, or from the manual override, or from the house
+   fallback of 20.0 °C, and from nowhere else. The panel offers the target control of a room only
+   when the room carries a target, so a room must always carry one: with no file at all, every
+   room reports the fallback and its card still offers the control.
 2. The file applies within one cycle of a save, with no restart and no service call.
 3. A manual set holds to the next block, and the schedule resumes without a fight.
 4. A bad file never moves the hardware and never stops the cycle.
@@ -4240,14 +4243,51 @@ The same session found two faults of the same kind, where the panel hides what t
 
 ---
 
+### Task 21: A room with no valve
+
+The operator asked for this on 2026-11-21: both bathrooms hold a temperature sensor and no
+controllable valve, so the operator wants a room that carries a target, for example 25 °C, and
+heats until the bathroom reaches it. The operator's own words: "may be it needs to be a virtual
+TRV". It is one: the room of this component is already the virtual thermostat, and its valves are
+a separate thing that a room may now do without.
+
+The spec's section 6.11, section 4.1 item 20, the term Valve-less room, the rules of sections 5.2
+and 5.3, and acceptance items 30 to 34.
+
+**What already works, and must not be rebuilt:** `decide()` turns the boiler on when any room
+calls, whatever valves that room holds; `valve_targets()` and `calibration_values()` iterate the
+valves of a room and therefore answer an empty mapping for a room with none; and `next_calling()`
+answers `fallback_demand` when the room temperature is `None`, which is false for a room with no
+`demand_fallback_sensors`, so a valve-less room with no reading holds no demand and never holds
+the boiler on.
+
+**Files:** `custom_components/room_climate/models.py` (the `valves` field accepts an empty tuple,
+and validation refuses a valve-less room with no source), `config_flow.py` (the valve picker
+becomes optional; the refusal names the missing source), `coordinator.py` (a valve-less room
+reports `degraded` false), `strings.json` and `translations/en.json` (byte-identical), and the
+tests of `test_models.py`, `test_config_flow.py`, `test_subentry_flow.py`, `test_control_decide.py`
+and `test_platforms.py`.
+
+- [ ] **Step 1: Write the failing tests.** The house model accepts a room with no valves; it
+  refuses a valve-less room with no source; a valve-less room at 25 °C whose source reads 22.3 °C
+  calls, the boiler turns on, and the room stops at 25.0 °C plus the hysteresis; its source going
+  unavailable stops the demand and the boiler; the room reports `degraded` false and an empty
+  `valve_targets`; no service call reaches any valve.
+- [ ] **Step 2: Run the tests to verify they fail.**
+- [ ] **Step 3: Write the change.**
+- [ ] **Step 4: Run `make check` to verify the whole suite passes.**
+- [ ] **Step 5: Commit** — `git commit -m "let a room hold a target with no valve under it"`
+
+---
+
 ## Self-review
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
 tasks 2, 11, 16, 17. Section 5.3 (adding a room) → task 16. Section 5.4 (picking a source) →
 task 17. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
 task 7. Section 6.5 → task 8. Section 6.6 → tasks 4, 15. Section 6.7 → tasks 9, 12.
-Section 6.8 → task 17. Section 6.9 → task 18. Section 6.10 → task 19. Section 7.1 to 7.3 →
-tasks 8, 10, 17, 20.
+Section 6.8 → task 17. Section 6.9 → task 18. Section 6.10 → task 19. Section 6.11 → task 21.
+Section 7.1 to 7.3 → tasks 8, 10, 17, 20.
 Section 7.4 → tasks 13, 17. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
 Section 9 → every task.
 

@@ -6,6 +6,8 @@ Revision 4: a room reads temperature sources and humidity sources, and a room ma
 cooling unit.
 Revision 5: the component holds the setpoint of a room itself, in one schedule file that
 carries a default, named groups and per-room overrides.
+Revision 6: a room may name no valve, and then its demand reaches the boiler alone. This is
+the room of a space whose radiator carries no controllable valve.
 Instance: Home Assistant 2026.10.1 at `http://192.168.1.7:8123`, HACS loaded.
 Target repository: `github.com/octo47/ha-automation`.
 
@@ -27,6 +29,7 @@ other custom integration, or on any HACS repository.
 | Valve | A `climate.*` TRV entity that accepts a target temperature. |
 | Temperature source | A temperature entity that the component reads. |
 | Humidity source | A humidity entity that the component reads and reports. |
+| Valve-less room | A room that names no valve. Its demand reaches the boiler alone, and it is the virtual thermostat of a space whose radiator this component cannot command. |
 | Cooling unit | A `climate.*` entity that accepts a cool mode, such as an air conditioner. |
 | Room temperature | The weighted mean of the usable temperature sources of a room. |
 | Room humidity | The weighted mean of the usable humidity sources of a room. |
@@ -184,6 +187,9 @@ room. The component must never offer that entity as a source.
     the shape now, and the task runs when a cooling unit exists.
 19. Hold the setpoint of every room in one schedule file that the operator writes: a default
     schedule, named groups, and the override of one room. Section 6.10 fixes the rules.
+20. Accept a room with no valve, whose demand reaches the boiler alone, so the operator holds
+    the temperature of a space whose radiator carries no controllable valve. Section 6.11
+    fixes the rules.
 
 ### 4.2 Out of scope
 
@@ -261,6 +267,7 @@ entry is visible to the entry.
 | `update_interval_seconds` | int | `30` | 10 to 600. |
 | `dry_run` | bool | `true` | Safety default. |
 | `master_enabled` | bool | `true` | Starting state of the master switch. |
+| `fallback_setpoint` | float | `20.0` | 5 to 30. The setpoint of a room whose schedule yields none. |
 | `ema_seconds` | int | `1800` | 60 to 10800. The time constant of the graph temperatures. |
 | `simulation` | bool | `false` | The entry drives the simulation house of section 7.4. |
 | `rooms` | list of `RoomConfig` | `[]` | See the next table. |
@@ -270,7 +277,7 @@ entry is visible to the entry.
 | `room_id` | slug | from the name | Matches `^[a-z0-9_]+$`. Unique in the entry. |
 | `name` | string | — | Required. |
 | `area_id` | area id | none | Optional. The component assigns the device to this area. |
-| `valves` | list of entity ids, climate domain | — | One or more. |
+| `valves` | list of entity ids, climate domain | `[]` | May be empty: section 6.11. A room with no valve drives the boiler alone. |
 | `sources` | list of `{entity_id, weight}` | — | One or more temperature sources. |
 | `humidity_sources` | list of `{entity_id, weight}` | `[]` | Optional humidity sources. |
 | `weight` | float | `1.0` | Greater than 0. |
@@ -296,7 +303,9 @@ Rules:
    read the same outdoor source, because the outdoor temperature belongs to the house.
 2. The `valve_mode` of `modulate` requires the `calibration` of `external_sensor`.
    Reason: the valve and the component must agree on the room temperature.
-3. A room with an empty `valves` list is invalid.
+3. A room with an empty `valves` list is valid, and it is then a valve-less room of section
+   6.11: it must name at least one temperature source, because the component would otherwise
+   have no reading of the space it heats.
 4. The options flow rejects a broken rule and names the two rooms.
 5. `room_id` is a slug, because the simulation house of section 7.4 builds entity ids from
    it. The room form derives the slug from the room name.
@@ -315,9 +324,12 @@ Rules:
 4. The flow removes a valve that a room of the same entry already claims, so one valve
    reaches one room.
 5. The flow accepts one or more valves, because a room can hold several. Two of the measured
-   rooms hold two valves each.
+   rooms hold two valves each. It also accepts none, which builds a valve-less room of section
+   6.11, and it then refuses the room unless a temperature source is named.
 6. The room temperature source defaults to `sensor.<valve>_local_temperature` of the first
    chosen valve, and the operator can replace it or add more than one source with a weight.
+   With no valve chosen there is no default, so the flow requires the operator to pick a
+   source.
 7. The room name is a text field, and the flow offers the area of the first chosen valve as
    the area of the room.
 8. One subentry builds one device, `Room Climate <room name>`, which carries the virtual
@@ -529,27 +541,59 @@ already exists. The instance holds no cooling unit yet, so the task waits.
    block, so the setting of one evening holds through the night. When no block matches in the
    seven days, the room has no setpoint.
 5. A room that names a group follows that group. A room that carries its own schedule follows
-   its own. A room that names neither follows `default`. A room whose schedule yields no
-   setpoint holds no demand, and reports the reason.
-6. The coordinator applies the setpoint at every cycle. The virtual thermostat reports it as
-   `target_temperature`, and its attributes carry `setpoint_source` (`schedule` or `manual`),
-   `schedule_group` (the group name, or `default`) and `next_change` (the instant and the
-   temperature of the next block, or `None`).
-7. A manual command on the virtual thermostat holds that value until the next block of the
+   its own. A room that names neither follows `default`.
+6. A room whose schedule yields no setpoint takes the house `fallback_setpoint` of section
+   5.2, which is 20.0 °C by default. A house with no schedule file at all therefore gives
+   every room that value. The thermostat of a room always carries a target while the entry is
+   loaded, because the panel offers the target control of a room only when the room carries
+   one. A room with no target offers no control at all, and the operator then has no way to
+   set a temperature from the panel.
+7. The coordinator applies the setpoint at every cycle. The virtual thermostat reports it as
+   `target_temperature`, and its attributes carry `setpoint_source` (`schedule`, `manual` or
+   `fallback`), `schedule_group` (the group name, or `default`) and `next_change` (the instant
+   and the temperature of the next block, or `None`).
+8. A manual command on the virtual thermostat holds that value until the next block of the
    schedule of that room takes effect. The schedule then resumes and `setpoint_source`
    returns to `schedule`. A manual set therefore never fights the schedule, and no person is
    overruled within the period that person set.
-8. The component reads the file when its modification time changes, and it checks at every
+9. The component reads the file when its modification time changes, and it checks at every
    cycle, so a saved edit applies within one cycle. It needs no restart and no service call.
-9. A file that fails to parse does not stop the cycle. The component keeps the last schedule
-   it read, reports `schedule_error` on the house device, and logs the fault once for each
-   change of the file.
-10. A block whose temperature falls outside the band of section 6.2 for a room is refused for
+10. A file that fails to parse does not stop the cycle. The component keeps the last schedule
+    it read, reports `schedule_error` on the house device, and logs the fault once for each
+    change of the file.
+11. A block whose temperature falls outside the band of section 6.2 for a room is refused for
     that room: the block is skipped, and `schedule_error` names the room and the block.
-11. A schedule never touches the hardware in dry run.
+12. A schedule never touches the hardware in dry run.
 
 The parsing of the file and the lookup of the setpoint are pure: `schedule.py` holds them and
 imports no Home Assistant module, in the same way as `control.py`.
+
+---
+
+### 6.11 A room with no valve
+
+1. A room may name no valve. Such a room is the virtual thermostat of a space whose heat this
+   component cannot command directly: a bathroom whose radiator carries a manual valve, or a
+   valve whose battery no longer answers.
+2. Its temperature sources, its window sensors and its own target are its whole
+   configuration. Its `calibration`, `valve_mode`, `off_setpoint`, `open_offset` and
+   `valve_command_interval_seconds` do nothing, because there is nothing to write.
+3. The rules of sections 6.1, 6.2 and 6.5 apply to it unchanged. Its demand reaches the boiler
+   through the house demand of section 6.5, so the boiler runs while the room is below its
+   target minus the hysteresis, and stops when the room reaches the target plus the hysteresis.
+   That path is the whole mechanism: the room commands no valve, so the boiler is its only
+   actuator.
+4. Such a room must name at least one temperature source, and the flow refuses one that names
+   none: the component would have no reading, so it could never stop heating.
+5. It carries no valve, so it reports `degraded` false and no valve target, and it never
+   reports degraded because of the absence of a valve.
+6. An unavailable reading stops its demand, by rule 4 of section 6.2: a valve-less room names
+   no `demand_fallback_sensors`, so nothing holds the demand. The component never holds the
+   boiler on without a reading of the room it heats.
+7. In dry run the room computes its demand, and the boiler is not fired.
+8. The boiler then fires for this room alone, so the installation must give the heat a path:
+   the radiator of that space must be open, or the system must carry a bypass. This is an
+   installation fact, and no rule of this document can supply it.
 
 ---
 
@@ -834,3 +878,15 @@ decision excluded.
     holds until the first block of the morning of the next day.
 28. The virtual thermostat answers `climate.turn_on` and `climate.turn_off`, and a room whose valve
     is unavailable carries a degraded binary sensor in the state `on`.
+29. A house with no schedule file at all gives every room the `fallback_setpoint`, so every room
+    carries a target and its card offers the target control. A room whose schedule later yields a
+    value reports `setpoint_source: schedule`; a room on the fallback reports `setpoint_source:
+    fallback`.
+30. A room with no valve and one temperature source is accepted, appears as
+    `climate.room_climate_<room>`, reports `degraded` false, and holds no valve target.
+31. That room, held at 25 °C while its source reads 22.3 °C, calls, and the house demand turns
+    the boiler on. When the room reaches 25.0 °C plus the hysteresis the room stops and the
+    boiler stops, honouring `min_on_seconds` and `min_off_seconds`.
+32. A valve-less room whose source becomes unavailable stops calling, and the boiler stops.
+33. The flow refuses a valve-less room that names no temperature source.
+34. A valve-less room sends no service call to any valve, and a dry run writes nothing.
