@@ -8,6 +8,9 @@ Revision 5: the component holds the setpoint of a room itself, in one schedule f
 carries a default, named groups and per-room overrides.
 Revision 6: a room may name no valve, and then its demand reaches the boiler alone. This is
 the room of a space whose radiator carries no controllable valve.
+Revision 7: the house form asks the two boiler timings in minutes, and they default to 30
+minutes on and 10 minutes off. Reason: the measurement of 2026-11-21 shows the earlier floor
+of five minutes never bound, so it protected nothing.
 Instance: Home Assistant 2026.10.1 at `http://192.168.1.7:8123`, HACS loaded.
 Target repository: `github.com/octo47/ha-automation`.
 
@@ -262,8 +265,8 @@ entry is visible to the entry.
 | `outdoor_sources` | list of entity ids | `["sensor.outdoor_temperature"]` | One or more. |
 | `lockout_temperature` | float | `18.0` | −20 to 40. |
 | `lockout_hysteresis` | float | `1.0` | 0 to 10. |
-| `min_on_seconds` | int | `300` | 0 to 3600. |
-| `min_off_seconds` | int | `300` | 0 to 3600. |
+| `min_on_seconds` | int | `1800` | 0 to 3600. The house form asks this in minutes: rule 6. |
+| `min_off_seconds` | int | `600` | 0 to 3600. The house form asks this in minutes: rule 6. |
 | `update_interval_seconds` | int | `30` | 10 to 600. |
 | `dry_run` | bool | `true` | Safety default. |
 | `master_enabled` | bool | `true` | Starting state of the master switch. |
@@ -309,6 +312,13 @@ Rules:
 4. The options flow rejects a broken rule and names the two rooms.
 5. `room_id` is a slug, because the simulation house of section 7.4 builds entity ids from
    it. The room form derives the slug from the room name.
+6. The house form asks `min_on_seconds` and `min_off_seconds` in **minutes**. Reason: an
+   operator sets the floor of a boiler in minutes, and a field that reads `1800` for half an
+   hour invites a mistake. The entry and the model hold seconds, because that is the unit the
+   control rule of section 6.5 compares, so no stored entry needs a migration. The form shows
+   a stored value as the nearest whole minute, a half minute going to the greater minute, and
+   it writes that whole minute back as seconds. A value that is not a whole number of minutes
+   therefore becomes the nearest whole minute when the operator saves the form.
 
 ### 5.3 How the operator adds a room
 
@@ -456,6 +466,18 @@ Timing rules:
    reasons `lockout` and `master_off` are exempt: those two stop the boiler at once.
 3. The component sends no boiler command when the wanted state equals the last sent
    state.
+
+Rules 1 and 2 hold the boiler, and not the valves: the valves of a room still open and close
+with the demand of that room. A floor under the on time therefore keeps the boiler running
+after the last room is satisfied, and that heat reaches whatever path is open — a radiator
+whose room has no valve, of section 6.11. The measurement of 2026-11-21 recorded this: the two
+bathrooms, which hold no valve, sat 1 to 2 °C above their targets while the boiler ran. The
+floor belongs to the operator; the fitting answer for such a room is a valve of its own.
+
+The default floor is 30 minutes on and 10 minutes off. Reason: the record of 2026-11-21 holds
+four boiler transitions in eleven hours under the earlier floor of five minutes, so that floor
+never bound and protected nothing. A boiler needs a longer run than five minutes, and a room
+that sits at its target boundary would otherwise ask again as soon as the floor allows.
 
 ### 6.6 Outdoor lockout
 
@@ -822,9 +844,12 @@ so a card points at a missing entity between the two steps.
 | Where a room reads its sensors | From the temperature and humidity sensors of the instance, offered in the picker of the form, with the sensors of the room's area first. | A free entity selector over every entity of the instance. |
 | Humidity | A room reads its humidity sources and reports their mean. The heating decision ignores it. | No humidity support, because the installation this component replaces made no use of it. |
 | Cooling | Designed now in section 6.9 and built later, when a cooling unit exists. A room decides its own cooling, and the boiler demand stays a heating decision. | Build cooling with the first release, or leave it out of the design and change the model later. |
+| The boiler floor | 30 minutes on and 10 minutes off, asked in minutes. | 5 minutes each, asked in seconds. The measurement of 2026-11-21 shows that floor never bound. |
 
 The operator accepted every default on 2026-10-19. The alternative column records what the
-decision excluded.
+decision excluded. The operator raised the two boiler timings on 2026-11-21, in their own
+words: "min time to heat (say we turn heating no less then on 30 minutes)" and "min time to
+reactivate (say 10 minutes or so)".
 
 ## 11. Acceptance criteria
 
@@ -837,8 +862,9 @@ decision excluded.
 4. The last room that stops calling sets the boiler to 15 °C with mode `off`.
 5. An outdoor temperature at or above the threshold stops the boiler. The lockout clears
    only after the outdoor temperature falls by the hysteresis value.
-6. The boiler does not switch on again within `min_off_seconds`, and it does not switch
-   off within `min_on_seconds`, except for the reasons `lockout` and `master_off`.
+6. The boiler does not switch on again within `min_off_seconds` (10 minutes by default), and
+   it does not switch off within `min_on_seconds` (30 minutes by default), except for the
+   reasons `lockout` and `master_off`.
 7. Two rooms that claim one valve fail the options flow with a message that names both
    rooms.
 8. An unavailable source is ignored. An unavailable valve is skipped, and the room reports
@@ -895,3 +921,5 @@ decision excluded.
 32. A valve-less room whose source becomes unavailable stops calling, and the boiler stops.
 33. The flow refuses a valve-less room that names no temperature source.
 34. A valve-less room sends no service call to any valve, and a dry run writes nothing.
+35. The house form asks the minimum on time and the minimum off time in minutes, and it shows
+    a stored value as the nearest whole minute; the entry keeps the value in seconds.

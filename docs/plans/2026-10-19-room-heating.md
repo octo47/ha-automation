@@ -4285,12 +4285,56 @@ and `test_platforms.py`.
 
 ---
 
+### Task 22: The boiler floor, in minutes
+
+The operator asked for this on 2026-11-21, in their own words: "min time to heat (say we turn
+heating no less then on 30 minutes)" and "min time to reactivate (say 10 minutes or so). This
+will prevent turning heat on/off constantly".
+
+Both rules already exist: section 6.5 rules 1 and 2, `_boiler_command()` in `control.py`, the
+`min_on_seconds` and `min_off_seconds` fields of the house model, and the two tests
+`test_the_boiler_does_not_switch_off_inside_min_on` and
+`test_the_boiler_does_not_switch_on_inside_min_off`. Two things are missing, and this task
+adds them.
+
+First, the house form asks the two fields in seconds, so an operator reads and types `1800`
+for half an hour: the form must ask minutes, per section 5.2 rule 6. Second, the defaults are
+five minutes each, so a fresh house carries a floor that the measurement of 2026-11-21 shows
+never bound — four boiler transitions in eleven hours, the shortest run 30 minutes and the
+shortest rest 64 minutes. The defaults become 30 minutes on and 10 minutes off.
+
+**Files:** `custom_components/room_climate/const.py` (the two defaults become 1800 and 600),
+`config_flow.py` (the two `HOUSE_SCHEMA` fields ask minutes; the initial flow and the options
+flow convert an answer of minutes to the seconds of the entry; `_house_settings()` converts a
+stored value of seconds to the minutes it suggests), `models.py` (the two fields keep the unit
+of the entry, seconds, and take the new defaults), `strings.json` and `translations/en.json`
+(byte-identical), and the tests of `test_config_flow.py` and `test_control_decide.py`.
+
+**What already works, and must not be rebuilt:** `_boiler_command()` compares
+`payload.boiler_state_since` against `timedelta(seconds=…)` and exempts the reasons `lockout`
+and `master_off` through its `immediate` argument; a fresh start leaves `boiler_state_since` as
+`None` and allows the first command, per section 6.7.3. The model and the entry keep seconds,
+so no control rule changes and no stored entry needs a migration: the minutes live in the form
+alone, and the two answer keys must not reach the stored entry.
+
+- [ ] **Step 1: Write the failing tests.** The house form offers the minimum on time and the
+  minimum off time in minutes, and it suggests the stored seconds as whole minutes; an answer
+  of 30 and 10 stores `min_on_seconds` 1800 and `min_off_seconds` 600 in the entry, and it
+  stores no minute key; a stored `min_on_seconds` of 300 reads as 5 minutes and one of 330
+  reads as 6 minutes; the house model defaults to 1800 and 600.
+- [ ] **Step 2: Run the tests to verify they fail.**
+- [ ] **Step 3: Write the change.**
+- [ ] **Step 4: Run `make check` to verify the whole suite passes.**
+- [ ] **Step 5: Commit** — `git commit -m "ask the boiler floor in minutes, and default to half an hour"`
+
+---
+
 ## Self-review
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
-tasks 2, 11, 16, 17. Section 5.3 (adding a room) → task 16. Section 5.4 (picking a source) →
+tasks 2, 11, 16, 17, 22. Section 5.3 (adding a room) → task 16. Section 5.4 (picking a source) →
 task 17. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
-task 7. Section 6.5 → task 8. Section 6.6 → tasks 4, 15. Section 6.7 → tasks 9, 12.
+task 7. Section 6.5 → tasks 8, 22. Section 6.6 → tasks 4, 15. Section 6.7 → tasks 9, 12.
 Section 6.8 → task 17. Section 6.9 → task 18. Section 6.10 → task 19. Section 6.11 → task 21.
 Section 7.1 to 7.3 → tasks 8, 10, 17, 20.
 Section 7.4 → tasks 13, 17. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
@@ -4307,4 +4351,5 @@ constants, the service file and the tests.
 
 **Decisions:** the operator accepted every default of the spec's section 10 on 2026-10-19.
 The tasks read those defaults from the spec. A change to a default is a change to the spec
-first.
+first: the operator raised the two boiler timings on 2026-11-21, section 10 carries the new
+default, and task 22 builds it.
