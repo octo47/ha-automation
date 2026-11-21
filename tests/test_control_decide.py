@@ -102,6 +102,10 @@ def test_no_calling_room_keeps_the_boiler_off() -> None:
 
 
 def test_the_last_room_stopping_turns_the_boiler_off() -> None:
+    """The last room that stops sends the off, once an explicit floor has elapsed.
+
+    The floor is explicit here so this test does not move with the default of the house.
+    """
     output = decide(
         payload(
             temperatures={
@@ -110,7 +114,8 @@ def test_the_last_room_stopping_turns_the_boiler_off() -> None:
                 "sensor.outdoor": 8.0,
             },
             boiler_on=True,
-            boiler_state_since=NOW - timedelta(minutes=30),
+            boiler_state_since=NOW - timedelta(minutes=10),
+            house=house(min_on_seconds=300),
         )
     )
     assert output.boiler.turn_on is False
