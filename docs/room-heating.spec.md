@@ -4,6 +4,8 @@ Status: draft for review. Date: 2026-10-19. Revision 2: Better Thermostat is rem
 Revision 3: the outdoor threshold is a per-room value, and the house value is its default.
 Revision 4: a room reads temperature sources and humidity sources, and a room may name a
 cooling unit.
+Revision 5: the component holds the setpoint of a room itself, in one schedule file that
+carries a default, named groups and per-room overrides.
 Instance: Home Assistant 2026.10.1 at `http://192.168.1.7:8123`, HACS loaded.
 Target repository: `github.com/octo47/ha-automation`.
 
@@ -29,7 +31,10 @@ other custom integration, or on any HACS repository.
 | Room temperature | The weighted mean of the usable temperature sources of a room. |
 | Room humidity | The weighted mean of the usable humidity sources of a room. |
 | Calling | The room needs heat now, because its temperature is below the setpoint. |
-| Setpoint | The target temperature of a room. The Scheduler sets this value. |
+| Setpoint | The target temperature of a room. The component holds it in the schedule of section 6.10, or a person sets it by hand. |
+| Schedule | The setpoints of a room over a day, or over a week, written in one file. |
+| Group | A named schedule that several rooms follow. |
+| Override | A setpoint that a person sets by hand. It holds until the next block of the schedule. |
 | Valve target | The target temperature the component writes to a valve. |
 | Calibration | The write of the room temperature into a valve, so the valve regulates on the room temperature. |
 | Feed entity | The `number.*_external_measured_room_sensor` entity of one valve. |
@@ -155,7 +160,7 @@ room. The component must never offer that entity as a source.
    sources into a room.
 2. Weight each source. A weight of zero excludes the source.
 3. Compute the room temperature as the weighted mean of the usable sources.
-4. Publish one virtual thermostat entity per room for the dashboard and for the Scheduler.
+4. Publish one virtual thermostat entity per room for the dashboard.
 5. Decide room demand from the setpoint and a hysteresis band.
 6. Drive the valves of a room, and rate limit the commands to a valve.
 7. Feed the room temperature into a valve, so the valve regulates on the room temperature.
@@ -177,6 +182,8 @@ room. The component must never offer that entity as a source.
     same way as the valves.
 18. Name a cooling unit in a room, and cool that room. This is a later task: section 6.9 fixes
     the shape now, and the task runs when a cooling unit exists.
+19. Hold the setpoint of every room in one schedule file that the operator writes: a default
+    schedule, named groups, and the override of one room. Section 6.10 fixes the rules.
 
 ### 4.2 Out of scope
 
@@ -186,8 +193,8 @@ room. The component must never offer that entity as a source.
    task changes no rule that exists.
 4. A computed valve position. The valve regulates its own position.
 5. Valve families other than the Hive TRV.
-6. Per-room weekly schedules inside this component. The Scheduler integration sets the
-   setpoints.
+6. A schedule editor in the user interface. The schedule is one file, and the operator edits
+   it with an editor or with Home Assistant's own file editor.
 7. The presets Activity, Away, Boost, Comfort, Eco, Home and Sleep of Better Thermostat.
    The component has one setpoint per room.
 8. A thermal model of the room. The simulated room temperature of section 7.4 is a knob.
@@ -217,14 +224,16 @@ import it. No second copy of the logic may exist in an automation or in a templa
 
 ### 5.1 Data flow of one cycle
 
-1. The coordinator collects the states of every configured entity.
-2. The coordinator builds a `ControlInput` model.
-3. `control.decide()` returns a `ControlOutput` model.
-4. In dry-run mode the coordinator logs the output and stops.
-5. Otherwise the coordinator calls `climate.set_temperature` for each valve target, calls
+1. The coordinator reads the schedule file when its modification time changed, and gives
+   every room its setpoint (section 6.10).
+2. The coordinator collects the states of every configured entity.
+3. The coordinator builds a `ControlInput` model.
+4. `control.decide()` returns a `ControlOutput` model.
+5. In dry-run mode the coordinator logs the output and stops.
+6. Otherwise the coordinator calls `climate.set_temperature` for each valve target, calls
    `number.set_value` for each calibration value, and calls `climate.set_temperature` for
    the boiler.
-6. The coordinator stores the output for the entities to publish.
+7. The coordinator stores the output for the entities to publish.
 
 ### 5.2 Configuration model
 
@@ -503,6 +512,47 @@ already exists. The instance holds no cooling unit yet, so the task waits.
    `auto` the room decides from its temperature and its setpoint.
 8. `hvac_action` is `cooling` while the room cools.
 
+### 6.10 The schedule
+
+1. One file holds the schedule of a whole house: `room_climate_schedule.yaml` in the Home
+   Assistant configuration directory. A simulated entry reads
+   `room_climate_schedule_sim.yaml`, so a bench never moves the schedule of the house. Both
+   paths come from `hass.config.path` and from the `simulation` flag. Neither is a setting.
+2. The file carries three optional keys: `default`, one schedule; `groups`, a map of a name
+   to a schedule; and `rooms`, a map of a room id to a group name or to a schedule.
+3. A schedule is a list of blocks. A block carries `time` as `HH:MM` in 24-hour time,
+   `temperature` in °C, and an optional `days`, which is a list of `mon`, `tue`, `wed`,
+   `thu`, `fri`, `sat` and `sun`. A block without `days` applies every day.
+4. The temperature in force at an instant is the temperature of the last block that applies
+   on that day at or before that instant. When no block of that day applies before the
+   instant, the rule reads back through the six days before it and takes the latest matching
+   block, so the setting of one evening holds through the night. When no block matches in the
+   seven days, the room has no setpoint.
+5. A room that names a group follows that group. A room that carries its own schedule follows
+   its own. A room that names neither follows `default`. A room whose schedule yields no
+   setpoint holds no demand, and reports the reason.
+6. The coordinator applies the setpoint at every cycle. The virtual thermostat reports it as
+   `target_temperature`, and its attributes carry `setpoint_source` (`schedule` or `manual`),
+   `schedule_group` (the group name, or `default`) and `next_change` (the instant and the
+   temperature of the next block, or `None`).
+7. A manual command on the virtual thermostat holds that value until the next block of the
+   schedule of that room takes effect. The schedule then resumes and `setpoint_source`
+   returns to `schedule`. A manual set therefore never fights the schedule, and no person is
+   overruled within the period that person set.
+8. The component reads the file when its modification time changes, and it checks at every
+   cycle, so a saved edit applies within one cycle. It needs no restart and no service call.
+9. A file that fails to parse does not stop the cycle. The component keeps the last schedule
+   it read, reports `schedule_error` on the house device, and logs the fault once for each
+   change of the file.
+10. A block whose temperature falls outside the band of section 6.2 for a room is refused for
+    that room: the block is skipped, and `schedule_error` names the room and the block.
+11. A schedule never touches the hardware in dry run.
+
+The parsing of the file and the lookup of the setpoint are pure: `schedule.py` holds them and
+imports no Home Assistant module, in the same way as `control.py`.
+
+---
+
 ## 7. Entities
 
 ### 7.1 Room device: `Room Climate <Room Name>`
@@ -713,7 +763,7 @@ so a card points at a missing entity between the two steps.
 
 | Decision | Default taken | Alternative |
 | --- | --- | --- |
-| Source of the setpoint | The Scheduler integration sets the setpoint. This component holds no schedule. | A weekly schedule inside the component. |
+| Source of the setpoint | The Scheduler integration sets the setpoint. This component holds no schedule. | A weekly schedule inside the component, in one file, with a default, groups and per-room overrides. |
 | Lockout effect | Per room, with the house value as the default. A locked-out room closes its valves and stops calling. The house lockout also stops the boiler. | One lockout for every room, driven by one threshold. |
 | Valve mode | `modulate`, with the calibration feed. The valve regulates its own position on the measured room temperature. | `boost`. The valve opens fully while the room calls. |
 | Runtime dependency | Keep `pydantic`, declared in the manifest. The repository rule requires a typed model at every boundary. | Replace the models with frozen dataclasses, and keep the integration free of third-party requirements. |
@@ -771,3 +821,14 @@ decision excluded.
 22. A room that names a cooling unit cools it when the room is above the setpoint plus the
     hysteresis, closes its own valves, and adds nothing to the boiler demand. This criterion
     belongs to the cooling task of the plan.
+23. A file with a `default` schedule and one group gives the rooms of that group the setpoint
+    of the group and every other room the default setpoint, within one cycle of the write and
+    with no restart.
+24. A room that carries its own schedule in the file follows that schedule in place of its
+    group.
+25. A manual set on the virtual thermostat holds until the next block of the schedule of the
+    room, and the schedule resumes then.
+26. A file that fails to parse leaves the previous setpoint in force and reports
+    `schedule_error`.
+27. A block that names days applies on those days only, and the block of the previous evening
+    holds until the first block of the morning of the next day.

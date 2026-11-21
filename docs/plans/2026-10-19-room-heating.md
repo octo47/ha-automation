@@ -4143,13 +4143,76 @@ candidate list of `climate` entities that offer `cool`), `translations/en.json`,
 
 ---
 
+### Task 19: The setpoint schedule
+
+The operator chose this shape on 2026-11-21: a simple YAML file with a default, groups and
+per-room overrides. The Scheduler integration is not installed on the instance, and the
+operator rejected it as too much work with the mouse. This task replaces the out-of-scope item
+6 of the spec with section 6.10.
+
+The spec's section 6.10, section 4.1 item 19, the terms Schedule, Group and Override, and
+acceptance items 23 to 27.
+
+**Files:**
+- Create: `custom_components/room_climate/schedule.py` — the file model, the parse and the
+  lookup. Pure: it imports no Home Assistant module, and the import test of Task 1 holds it to
+  that rule in the same way as `control.py`.
+- Create: `tests/test_schedule.py`
+- Modify: `custom_components/room_climate/coordinator.py` — read the file when its modification
+  time changes, and give every room its setpoint.
+- Modify: `custom_components/room_climate/climate.py` — the manual override, and the attributes
+  `setpoint_source`, `schedule_group` and `next_change`.
+- Modify: `custom_components/room_climate/models.py`, `const.py`, `sensor.py` (the
+  `schedule_error` diagnostic) and `translations/en.json`.
+- Modify: `tests/test_coordinator.py`, `tests/test_platforms.py`, `tests/conftest.py`.
+
+- [ ] **Step 1: Write the failing tests of the pure part.** `tests/test_schedule.py` covers the
+  lookup and the parse:
+  - The setpoint at an instant is the temperature of the last block at or before that instant.
+  - A block that names days applies on those days only.
+  - When no block of the day applies before the instant, the latest block of the previous six
+    days holds, so the evening setting survives the night.
+  - No block within the seven days yields no setpoint, and not a zero.
+  - A room names a group, carries its own schedule, or follows `default`.
+  - A group name that no group defines is an error that names the room and the name.
+  - A malformed file, a bad time and a bad temperature each produce an error, and never a
+    silent default.
+  - A missing file is not an error: every room has no setpoint, and the entry still loads.
+- [ ] **Step 2: Run the tests to verify they fail.** `make test` — the new file fails on the
+  import, and every existing test still passes.
+- [ ] **Step 3: Write `schedule.py`.** A pydantic model of the file, a parse function, and a
+  lookup function that takes the model, a room id and an instant, and answers the setpoint, its
+  group and the next change. Run the tests to verify they pass.
+- [ ] **Step 4: Write the failing tests of the loop.** A change of the modification time of the
+  file applies within one cycle; a room follows its group; a room follows its own schedule; a
+  manual set on the thermostat holds until the next block and the schedule resumes then; a
+  malformed file keeps the last setpoint and reports `schedule_error`; a simulated entry reads
+  the simulated path and not the path of the house.
+- [ ] **Step 5: Run the tests to verify they fail.**
+- [ ] **Step 6: Write the change** in the coordinator and in the entities. Run the tests to
+  verify they pass.
+- [ ] **Step 7: Run `make check`** to verify the whole suite passes.
+- [ ] **Step 8: Commit** — `git commit -m "hold the setpoint of a room in one schedule file"`
+
+**The rules the tests must prove:**
+1. The setpoint of a room comes from the file and from nowhere else, and a room with no
+   setpoint holds no demand.
+2. The file applies within one cycle of a save, with no restart and no service call.
+3. A manual set holds to the next block, and the schedule resumes without a fight.
+4. A bad file never moves the hardware and never stops the cycle.
+5. A simulated entry reads its own file, so the bench cannot move the schedule of the house.
+6. In dry run a change of the schedule sends no service call.
+
+---
+
 ## Self-review
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
 tasks 2, 11, 16, 17. Section 5.3 (adding a room) → task 16. Section 5.4 (picking a source) →
 task 17. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
 task 7. Section 6.5 → task 8. Section 6.6 → tasks 4, 15. Section 6.7 → tasks 9, 12.
-Section 6.8 → task 17. Section 6.9 → task 18. Section 7.1 to 7.3 → tasks 8, 10, 17.
+Section 6.8 → task 17. Section 6.9 → task 18. Section 6.10 → task 19. Section 7.1 to 7.3 →
+tasks 8, 10, 17.
 Section 7.4 → tasks 13, 17. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
 Section 9 → every task.
 

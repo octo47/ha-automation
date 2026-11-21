@@ -102,21 +102,82 @@ confirmed, so confirm it on one valve before the component writes to ten.
 This is the one live write to a real valve, and the operator performs it.
 
 1. Pick one valve. `climate.trv_main_bedroom` is the one to use.
-2. Write the value 2150 into `number.trv_main_bedroom_external_measured_room_sensor`.
+2. Write the value 2150 into `number.trv_main_bedroom_external_measured_room_sensor`. That value
+   means 21.5 °C if the scale is 0.01.
 3. Read the value back.
-4. Watch `sensor.trv_main_bedroom_pi_heating_demand` and
-   `sensor.trv_main_bedroom_local_temperature` for one hour. The name of each reading follows the
-   valve's own name, so read the three ids of the valve the operator picked from the instance.
-5. If the valve regulates on the written value, keep the `calibration` of `external_sensor` and
+4. Set the target of that valve to 20.0, and read `sensor.trv_main_bedroom_local_temperature`.
+   The test is now decisive, because the two readings disagree: the written room temperature,
+   21.5 °C, sits **above** the target, while the valve's own sensor sits below it in every room
+   of this house today.
+5. Watch `sensor.trv_main_bedroom_pi_heating_demand` for one hour. The name of each reading
+   follows the valve's own name, so read the three ids of the valve the operator picked from the
+   instance. A demand of zero means the valve regulates on the written value, because 21.5 °C is
+   above the target of 20.0. A demand above zero means the valve ignores the written value and
+   regulates on its own sensor.
+6. Write −8000 back into the feed entity, and the target of the valve back to its earlier value.
+   The state is then as it was.
+7. If the valve regulates on the written value, keep the `calibration` of `external_sensor` and
    the `calibration_scale` of 100 for every room. The component then writes
    `round(room_temperature × 100)` into every valve of the room.
-6. If it does not, set the `calibration` of every room to `none` and the `valve_mode` to
+8. If it does not, set the `calibration` of every room to `none` and the `valve_mode` to
    `boost`. In `boost` mode the valve target is the setpoint plus `open_offset` while the room
    calls, and `off_setpoint` while it does not, so the valve regulates on its own local sensor
    instead of the written room temperature.
 
 `modulate` requires the `external_sensor` calibration, because the valve and the component must
 agree on the room temperature. `boost` is the fallback for a valve that ignores the feed.
+
+## Phase C — the schedule
+
+The component holds the setpoint of every room in one file: `room_climate_schedule.yaml` in the
+Home Assistant configuration directory. A simulated entry reads
+`room_climate_schedule_sim.yaml` instead, so a bench never moves the schedule of the house.
+
+The file carries three optional keys. `default` is the schedule that every room without an entry
+of its own follows. `groups` names a schedule that several rooms follow, so one edit moves a
+group of rooms at once. `rooms` gives one room its own schedule, or names the group that room
+follows.
+
+```yaml
+default:
+  - time: "06:30"
+    temperature: 20.0
+  - time: "22:30"
+    temperature: 15.0
+groups:
+  daytime:
+    - time: "06:00"
+      temperature: 21.5
+    - time: "23:00"
+      temperature: 15.0
+rooms:
+  main_bedroom: daytime
+  living_room:
+    - time: "07:00"
+      temperature: 19.5
+    - days: [sat, sun]
+      time: "08:30"
+      temperature: 20.5
+    - time: "22:00"
+      temperature: 15.0
+```
+
+`main_bedroom` follows the group `daytime` above. `living_room` carries its own schedule, and its
+middle block applies on Saturday and Sunday only.
+
+1. `time` is 24-hour `HH:MM`. `temperature` is °C. `days` is optional and means every day when it
+   is absent.
+2. The temperature in force at an instant is the last block of that day at or before the instant.
+   Before the first block of a day the latest block of the previous six days holds, so the
+   evening setting survives the night.
+3. The room id is the one the integration page shows for the room, such as `main_bedroom`.
+4. A save applies within one cycle, which is 30 seconds. No restart, and no service call.
+5. A manual set on `climate.room_climate_<room>` holds until the next block of the schedule of
+   that room, and the schedule resumes then. The attributes of the thermostat carry
+   `setpoint_source`, `schedule_group` and `next_change`.
+6. A file that fails to parse keeps the last good schedule in force and reports `schedule_error`.
+   The rooms stay where they were, and the house stays warm.
+7. Begin with this file, then change one room at a time.
 
 ## Rollback
 
