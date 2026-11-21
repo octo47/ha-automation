@@ -4327,6 +4327,17 @@ alone, and the two answer keys must not reach the stored entry.
 - [ ] **Step 4: Run `make check` to verify the whole suite passes.**
 - [ ] **Step 5: Commit** — `git commit -m "ask the boiler floor in minutes, and default to half an hour"`
 
+**As built (2026-11-21):** `b253fe7` implements the change, with `c9a9dfb` on top. The brief named
+two timing-sensitive tests in `test_control_decide.py`; the file holds three, and the third
+reached its elapsed time with a hard-coded ten minutes that only cleared the old 300 s default,
+so raising the default moved the goalposts under it. That test now names its floor explicitly
+(`house=house(min_on_seconds=300)`), the pattern `tests/test_sim.py` already uses, so the next
+change to a default cannot break it. The minutes live in the form alone: `const.py` carries the
+two new keys and the two new defaults, `config_flow.py` converts both ways through
+`_minutes_from_seconds` and `_seconds_from_minutes`, with `_boiler_timings` serving both writers,
+and the model, the entry and the rule of section 6.5 keep seconds, so there is no migration and
+no `VERSION` bump. Gate: `make check` at 250 passed, with ruff and pyright clean.
+
 ---
 
 ## Self-review
