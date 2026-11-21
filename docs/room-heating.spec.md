@@ -618,7 +618,8 @@ Climate entity rules:
 4. `target_temperature` is the setpoint. The entity restores it after a restart.
 5. `hvac_action` is `heating` when the room calls for heat, `cooling` while it cools, and `idle`
    otherwise.
-6. The entity accepts `set_temperature` and `set_hvac_mode`.
+6. The entity accepts `set_temperature`, `set_hvac_mode`, `turn_on` and `turn_off`. `turn_on` and
+   `turn_off` move the HVAC mode, so the setpoint survives an off and on round trip.
 7. Attributes: the usable source count, the room temperature, the room humidity, the calling
    state, the valve list, the valve targets, the calibration value, the count of unavailable
    valves, the lockout state of the room, and the degradation flag.
@@ -627,7 +628,7 @@ Climate entity rules:
 
 | Entity | Kind | Default state | Purpose |
 | --- | --- | --- | --- |
-| `switch.room_climate_boiler_automation` | switch | on | Master enable. |
+| `switch.room_climate_enabled` | switch | on | Master enable of the component. |
 | `switch.room_climate_lockout_override` | switch | off | Bypass of the outdoor lockout. |
 | `binary_sensor.room_climate_boiler_demand` | binary sensor | off | Wanted boiler state. |
 | `binary_sensor.room_climate_outdoor_lockout` | binary sensor | off | The house lockout state. |
@@ -643,6 +644,7 @@ Per room, in addition to the climate entity:
 | `sensor.room_climate_<room>_temperature_ema` | sensor, temperature | The smoothed room temperature for a graph. |
 | `sensor.room_climate_<room>_humidity` | sensor, humidity | The room humidity. Absent when the room names no humidity source. |
 | `binary_sensor.room_climate_<room>_calling` | binary sensor | The demand latch for a graph. |
+| `binary_sensor.room_climate_<room>_degraded` | binary sensor, problem | The room cannot heat all its valves. |
 
 ### 7.3 Dashboard
 
@@ -720,7 +722,7 @@ Switch-over:
 3. Disable the simulated entry when the bench is no longer useful. Its entities go away.
 4. The house name and the room name build every device name, and the entity ids follow the
    device name. Title the bench entry `Room Climate Bench`, and its entities carry the ids
-   `climate.room_climate_bench_front_room` and `switch.room_climate_bench_boiler_automation`. Two
+   `climate.room_climate_bench_front_room` and `switch.room_climate_bench_enabled`. Two
    entries with different titles therefore never compete for one entity id.
 
 ## 8. Install, migrate and roll back

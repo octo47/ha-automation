@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -95,6 +96,24 @@ async def test_a_real_entity_is_rejected_in_a_simulated_entry(hass: HomeAssistan
     )
     entry.add_to_hass(hass)
     assert not await hass.config_entries.async_setup(entry.entry_id)
+
+
+async def test_the_bench_climate_entities_answer_turn_off_and_turn_on(
+    hass: HomeAssistant,
+) -> None:
+    await setup_bench(hass)
+    for entity_id in ("climate.sim_front_room_valve", "climate.sim_boiler"):
+        features = hass.states.get(entity_id).attributes["supported_features"]
+        assert features & ClimateEntityFeature.TURN_ON, entity_id
+        assert features & ClimateEntityFeature.TURN_OFF, entity_id
+
+        await hass.services.async_call("climate", "turn_off", {"entity_id": entity_id})
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).state == "off", entity_id
+
+        await hass.services.async_call("climate", "turn_on", {"entity_id": entity_id})
+        await hass.async_block_till_done()
+        assert hass.states.get(entity_id).state == "heat", entity_id
 
 
 async def test_a_cold_room_fires_the_virtual_boiler(hass: HomeAssistant) -> None:

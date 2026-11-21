@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor.const import BinarySensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -27,7 +28,8 @@ async def async_setup_entry(
     async_add_entities([BoilerDemandSensor(coordinator), OutdoorLockoutSensor(coordinator)])
     for room in coordinator.config.rooms:
         async_add_entities(
-            [RoomCallingSensor(coordinator, room)], config_subentry_id=room.subentry_id
+            [RoomCallingSensor(coordinator, room), RoomDegradedSensor(coordinator, room)],
+            config_subentry_id=room.subentry_id,
         )
     if coordinator.config.simulation:
         signals: list[BinarySensorEntity] = [
@@ -113,3 +115,20 @@ class RoomCallingSensor(HouseBinarySensor):
         """Copy the demand latch of the room."""
         command = room_command(self.coordinator, self.room.room_id)
         self._attr_is_on = command is not None and command.calling
+
+
+class RoomDegradedSensor(HouseBinarySensor):
+    """The degradation flag of one room: it cannot heat all its valves."""
+
+    _attr_name = "Degraded"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+
+    def __init__(self, coordinator: RoomClimateCoordinator, room: RoomConfig) -> None:
+        super().__init__(coordinator, f"{room.room_id}_degraded", room_device(coordinator, room))
+        self.room = room
+
+    @callback
+    def _sync(self) -> None:
+        """Copy the degradation flag of the room."""
+        command = room_command(self.coordinator, self.room.room_id)
+        self._attr_is_on = command is not None and command.degraded

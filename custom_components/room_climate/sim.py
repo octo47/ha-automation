@@ -208,7 +208,11 @@ class SimValveEntity(_SimEntity, ClimateEntity):
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
         self._attr_hvac_mode = HVACMode.HEAT
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
-        self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+        self._attr_supported_features = (
+            ClimateEntityFeature.TARGET_TEMPERATURE
+            | ClimateEntityFeature.TURN_ON
+            | ClimateEntityFeature.TURN_OFF
+        )
         self._attr_target_temperature_step = 0.5
         self._attr_min_temp = SIM_MIN_TEMPERATURE
         self._attr_max_temp = SIM_MAX_TEMPERATURE
@@ -229,6 +233,19 @@ class SimValveEntity(_SimEntity, ClimateEntity):
             self._attr_target_temperature = float(temperature)
         self._publish()
 
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Take the mode of the virtual valve: off closes it."""
+        self._attr_hvac_mode = hvac_mode
+        self._publish()
+
+    async def async_turn_on(self) -> None:
+        """Open the virtual valve to heat."""
+        await self.async_set_hvac_mode(HVACMode.HEAT)
+
+    async def async_turn_off(self) -> None:
+        """Close the virtual valve."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
+
 
 class SimBoilerEntity(_SimEntity, ClimateEntity):
     """A boiler that fires on a high target, like the Hive pair."""
@@ -238,7 +255,11 @@ class SimBoilerEntity(_SimEntity, ClimateEntity):
         self._attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT]
         self._attr_hvac_mode = HVACMode.HEAT
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
-        self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+        self._attr_supported_features = (
+            ClimateEntityFeature.TARGET_TEMPERATURE
+            | ClimateEntityFeature.TURN_ON
+            | ClimateEntityFeature.TURN_OFF
+        )
         self._attr_target_temperature_step = 0.5
         self._attr_min_temp = SIM_MIN_TEMPERATURE
         self._attr_max_temp = SIM_BOILER_MAX_TEMPERATURE
@@ -264,6 +285,14 @@ class SimBoilerEntity(_SimEntity, ClimateEntity):
         """Take the mode of the virtual boiler."""
         self._attr_hvac_mode = hvac_mode
         self._publish()
+
+    async def async_turn_on(self) -> None:
+        """Put the virtual boiler in heat."""
+        await self.async_set_hvac_mode(HVACMode.HEAT)
+
+    async def async_turn_off(self) -> None:
+        """Put the virtual boiler off."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
 
 
 class SimNumberEntity(_SimEntity, NumberEntity):

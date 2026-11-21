@@ -24,7 +24,7 @@ async def async_setup_entry(
     """Add the two switches of the house, and the knobs of a bench."""
     coordinator = entry.runtime_data
     entities: list[SwitchEntity] = [
-        BoilerAutomationSwitch(coordinator),
+        EnabledSwitch(coordinator),
         LockoutOverrideSwitch(coordinator),
     ]
     if coordinator.config.simulation:
@@ -73,14 +73,14 @@ class HouseSwitch(SwitchEntity):
         self._sync()
 
 
-class BoilerAutomationSwitch(HouseSwitch):
+class EnabledSwitch(HouseSwitch):
     """The master enable of the component."""
 
-    _attr_name = "Boiler Automation"
+    _attr_name = "Enabled"
     _attr_icon = "mdi:radiator"
 
     def __init__(self, coordinator: RoomClimateCoordinator) -> None:
-        super().__init__(coordinator, "boiler_automation")
+        super().__init__(coordinator, "enabled")
 
     @callback
     def _sync(self) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -38,7 +39,7 @@ async def test_the_scheduler_sets_the_setpoint_and_the_room_calls(hass: HomeAssi
 async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
     await setup_entry(hass, dry_run=True)
     for entity_id in (
-        "switch.room_climate_boiler_automation",
+        "switch.room_climate_enabled",
         "switch.room_climate_lockout_override",
         "binary_sensor.room_climate_boiler_demand",
         "binary_sensor.room_climate_outdoor_lockout",
@@ -48,6 +49,7 @@ async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
         "sensor.room_climate_front_room_temperature",
         "sensor.room_climate_front_room_temperature_ema",
         "binary_sensor.room_climate_front_room_calling",
+        "binary_sensor.room_climate_front_room_degraded",
     ):
         assert hass.states.get(entity_id) is not None, entity_id
 
@@ -68,8 +70,8 @@ async def test_a_second_entry_keeps_its_own_title_in_the_entity_ids(
 
     assert hass.states.get("climate.room_climate_front_room") is not None
     assert hass.states.get("climate.room_climate_bench_front_room") is not None
-    assert hass.states.get("switch.room_climate_boiler_automation") is not None
-    assert hass.states.get("switch.room_climate_bench_boiler_automation") is not None
+    assert hass.states.get("switch.room_climate_enabled") is not None
+    assert hass.states.get("switch.room_climate_bench_enabled") is not None
     assert hass.states.get("climate.room_climate_front_room_2") is None
 
 
@@ -82,7 +84,7 @@ async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> Non
     )
     await hass.async_block_till_done()
     await hass.services.async_call(
-        "switch", "turn_off", {"entity_id": "switch.room_climate_boiler_automation"}
+        "switch", "turn_off", {"entity_id": "switch.room_climate_enabled"}
     )
     await hass.async_block_till_done()
     boiler = [
@@ -92,3 +94,57 @@ async def test_the_master_switch_releases_the_boiler(hass: HomeAssistant) -> Non
     ]
     assert boiler[-1]["temperature"] == 15.0
     assert boiler[-1]["hvac_mode"] == "off"
+
+
+async def test_the_room_thermostat_answers_turn_off_and_turn_on(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=True)
+    await hass.services.async_call(
+        "climate",
+        "set_temperature",
+        {"entity_id": "climate.room_climate_front_room", "temperature": 21.0},
+    )
+    await hass.async_block_till_done()
+    features = hass.states.get("climate.room_climate_front_room").attributes["supported_features"]
+    assert features & ClimateEntityFeature.TURN_ON
+    assert features & ClimateEntityFeature.TURN_OFF
+
+    await hass.services.async_call(
+        "climate", "turn_off", {"entity_id": "climate.room_climate_front_room"}
+    )
+    await hass.async_block_till_done()
+    state = hass.states.get("climate.room_climate_front_room")
+    assert state.state == "off"
+    assert state.attributes["temperature"] == 21.0
+
+    await hass.services.async_call(
+        "climate", "turn_on", {"entity_id": "climate.room_climate_front_room"}
+    )
+    await hass.async_block_till_done()
+    state = hass.states.get("climate.room_climate_front_room")
+    assert state.state == "heat"
+    assert state.attributes["temperature"] == 21.0
+
+
+async def test_a_room_with_an_unavailable_valve_reports_degraded(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=True)
+    sensor = hass.states.get("binary_sensor.room_climate_front_room_degraded")
+    assert sensor is not None
+    assert sensor.attributes["device_class"] == "problem"
+    assert sensor.state == "off"
+
+    hass.states.async_set("climate.trv_front_room", "unavailable")
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.room_climate_front_room_degraded").state == "on"
+    assert hass.states.get("climate.room_climate_front_room").attributes["degraded"] is True
+
+    hass.states.async_set("climate.trv_front_room", "heat", {"temperature": 5.0})
+    await hass.async_block_till_done()
+    assert hass.states.get("binary_sensor.room_climate_front_room_degraded").state == "off"
+
+
+async def test_the_master_switch_is_named_enabled(hass: HomeAssistant) -> None:
+    await setup_entry(hass, dry_run=True)
+    state = hass.states.get("switch.room_climate_enabled")
+    assert state is not None
+    assert state.attributes["friendly_name"] == "Room Climate Enabled"
+    assert hass.states.get("switch.room_climate_boiler_automation") is None

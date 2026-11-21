@@ -48,7 +48,11 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
     _attr_has_entity_name = True
     _attr_name = None
     _attr_target_temperature_step = 0.5
-    _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
+    _attr_supported_features = (
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+    )
     _attr_should_poll = False
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_current_temperature: float | None = None
@@ -118,6 +122,14 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
         self._attr_hvac_mode = hvac_mode
         self._remember()
         await self.coordinator.async_recompute()
+
+    async def async_turn_on(self) -> None:
+        """Return the room to heat, keeping the setpoint across the round trip."""
+        await self.async_set_hvac_mode(HVACMode.HEAT)
+
+    async def async_turn_off(self) -> None:
+        """Stop the room, keeping the setpoint across the round trip."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
 
     async def async_added_to_hass(self) -> None:
         """Follow the cycle, and restore the setpoint and the mode."""
