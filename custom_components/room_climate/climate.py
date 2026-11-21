@@ -80,6 +80,12 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
     def _sync(self) -> None:
         """Copy the last cycle of the room into the attributes of the entity."""
         command = room_command(self.coordinator, self.room.room_id)
+        runtime = self.coordinator.runtimes.get(self.room.room_id)
+        self._attr_target_temperature = (
+            self.coordinator.config.fallback_setpoint
+            if runtime is None
+            else runtime.target_temperature
+        )
         self._attr_current_temperature = None if command is None else command.room_temperature
         self._attr_hvac_action = (
             HVACAction.HEATING if command is not None and command.calling else HVACAction.IDLE
@@ -94,33 +100,42 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
             "degraded": command is None or command.degraded,
             "window_open": command is not None and command.window_open,
             "locked_out": command is not None and command.locked_out,
+            "setpoint_source": "fallback" if runtime is None else runtime.setpoint_source,
+            "schedule_group": "default" if runtime is None else runtime.schedule_group,
+            "next_change": self._next_change_attribute(runtime),
         }
 
-    def _remember(self) -> None:
-        """Keep the setpoint and the mode in the runtime state of the room."""
+    @staticmethod
+    def _next_change_attribute(runtime: RuntimeRoom | None) -> dict[str, object] | None:
+        """Return the next block of the schedule as the attribute the dashboard reads."""
+        if runtime is None or runtime.next_change_at is None:
+            return None
+        return {
+            "at": runtime.next_change_at.isoformat(),
+            "temperature": runtime.next_change_temperature,
+        }
+
+    def _remember_mode(self) -> None:
+        """Keep the mode in the runtime state of the room."""
         runtime = self.coordinator.runtimes.get(
             self.room.room_id, RuntimeRoom(room_id=self.room.room_id)
         )
         mode = self._attr_hvac_mode or HVACMode.HEAT
         self.coordinator.runtimes[self.room.room_id] = runtime.model_copy(
-            update={
-                "target_temperature": self._attr_target_temperature,
-                "hvac_mode": mode.value,
-            }
+            update={"hvac_mode": mode.value}
         )
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set the setpoint of the room and run one cycle."""
+        """Hold a manual setpoint on the room and run one cycle."""
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if isinstance(temperature, (int, float)):
-            self._attr_target_temperature = float(temperature)
-        self._remember()
+            self.coordinator.set_manual_target(self.room.room_id, float(temperature))
         await self.coordinator.async_recompute()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set the mode of the room and run one cycle."""
         self._attr_hvac_mode = hvac_mode
-        self._remember()
+        self._remember_mode()
         await self.coordinator.async_recompute()
 
     async def async_turn_on(self) -> None:
@@ -132,17 +147,14 @@ class RoomClimateEntity(RestoreEntity, ClimateEntity):
         await self.async_set_hvac_mode(HVACMode.OFF)
 
     async def async_added_to_hass(self) -> None:
-        """Follow the cycle, and restore the setpoint and the mode."""
+        """Follow the cycle, and restore the mode."""
         await super().async_added_to_hass()
         self.async_on_remove(self.coordinator.async_add_listener(self._handle_cycle))
         last = await self.async_get_last_state()
         if last is not None:
-            temperature = last.attributes.get(ATTR_TEMPERATURE)
-            if isinstance(temperature, (int, float)):
-                self._attr_target_temperature = float(temperature)
             try:
                 self._attr_hvac_mode = HVACMode(last.state)
             except ValueError:
                 pass
-        self._remember()
+        self._remember_mode()
         self._sync()

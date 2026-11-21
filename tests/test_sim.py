@@ -16,6 +16,7 @@ def bench_room(**overrides: object) -> dict[str, object]:
         "name": "Front Room",
         "valves": ["climate.sim_front_room_valve"],
         "sources": [{"entity_id": "number.sim_front_room_room_temperature"}],
+        "valve_command_interval_seconds": 0,
     }
     data.update(overrides)
     return {

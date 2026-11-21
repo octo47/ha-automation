@@ -17,6 +17,7 @@ CONF_DRY_RUN = "dry_run"
 CONF_MASTER_ENABLED = "master_enabled"
 CONF_EMA_SECONDS = "ema_seconds"
 CONF_ROOMS = "rooms"
+CONF_FALLBACK_SETPOINT = "fallback_setpoint"
 
 CONF_ROOM_ID = "room_id"
 CONF_NAME = "name"
@@ -54,6 +55,9 @@ DEFAULT_OPEN_OFFSET = 2.0
 DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS = 300
 DEFAULT_CALIBRATION_SCALE = 100
 DEFAULT_DRY_RUN = True
+DEFAULT_FALLBACK_SETPOINT = 20.0
+FALLBACK_SETPOINT_MIN = 5.0
+FALLBACK_SETPOINT_MAX = 30.0
 
 CALIBRATION_EXTERNAL = "external_sensor"
 CALIBRATION_NONE = "none"
@@ -85,3 +89,12 @@ STATUS_DEGRADED = "degraded"
 CONF_SIMULATION = "simulation"
 
 SERVICE_RECOMPUTE = "recompute"
+
+# The schedule of one house lives in one file, and a bench reads its own.
+SCHEDULE_FILE = "room_climate_schedule.yaml"
+SCHEDULE_FILE_SIM = "room_climate_schedule_sim.yaml"
+
+# Where the setpoint of a room comes from.
+SETPOINT_SOURCE_SCHEDULE = "schedule"
+SETPOINT_SOURCE_MANUAL = "manual"
+SETPOINT_SOURCE_FALLBACK = "fallback"

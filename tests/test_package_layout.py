@@ -6,6 +6,8 @@ import ast
 import json
 import pathlib
 
+import pytest
+
 ROOT = pathlib.Path(__file__).parents[1]
 COMPONENT = ROOT / "custom_components" / "room_climate"
 
@@ -17,9 +19,10 @@ def test_domain_matches_directory() -> None:
     assert manifest["requirements"] == ["pydantic>=2.11,<3"]
 
 
-def test_control_module_has_no_home_assistant_import() -> None:
-    """control.py is host independent, so its rules stay unit testable."""
-    tree = ast.parse((COMPONENT / "control.py").read_text())
+@pytest.mark.parametrize("module", ["control.py", "schedule.py"])
+def test_a_pure_module_has_no_home_assistant_import(module: str) -> None:
+    """A host independent module holds the rules, so its rules stay unit testable."""
+    tree = ast.parse((COMPONENT / module).read_text())
     imported: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

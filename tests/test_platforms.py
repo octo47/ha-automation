@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
 from homeassistant.components.climate.const import ClimateEntityFeature
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.room_climate.const import DOMAIN
 
-from .test_coordinator import calls, options, room_subentry, setup_entry
+from .test_coordinator import (
+    calls,
+    calls_for,
+    options,
+    room_subentry,
+    setup_entry,
+    write_schedule,
+)
 
 
 async def test_the_virtual_thermostat_reports_the_weighted_temperature(
@@ -34,6 +45,71 @@ async def test_the_scheduler_sets_the_setpoint_and_the_room_calls(hass: HomeAssi
     state = hass.states.get("climate.room_climate_front_room")
     assert state.attributes["temperature"] == 21.0
     assert state.attributes["hvac_action"] == "heating"
+    assert state.attributes["setpoint_source"] == "manual"
+
+
+async def test_the_thermostat_reports_the_schedule_of_the_room(hass: HomeAssistant) -> None:
+    write_schedule(
+        hass,
+        """
+groups:
+  morning:
+    - time: "00:00"
+      temperature: 22.0
+rooms:
+  front_room: morning
+""",
+    )
+    await setup_entry(hass, dry_run=True)
+    state = hass.states.get("climate.room_climate_front_room")
+    assert state.attributes["temperature"] == 22.0
+    assert state.attributes["setpoint_source"] == "schedule"
+    assert state.attributes["schedule_group"] == "morning"
+    assert state.attributes["hvac_action"] == "heating"
+
+
+async def test_the_thermostat_reports_the_next_change(hass: HomeAssistant, freezer: Any) -> None:
+    freezer.move_to(datetime(2026, 11, 18, 12, 0, tzinfo=UTC))
+    later = (dt_util.now() + timedelta(hours=1)).strftime("%H:%M")
+    write_schedule(
+        hass,
+        f'default:\n  - time: "00:00"\n    temperature: 21.0\n'
+        f'  - time: "{later}"\n    temperature: 16.0\n',
+    )
+    await setup_entry(hass, dry_run=True)
+    state = hass.states.get("climate.room_climate_front_room")
+    next_change = state.attributes["next_change"]
+    assert next_change is not None
+    assert next_change["temperature"] == 16.0
+    assert next_change["at"][11:16] == later
+
+
+async def test_a_room_without_a_schedule_reports_the_fallback_target(
+    hass: HomeAssistant,
+) -> None:
+    """A thermostat without a target offers the operator no control at all."""
+    entry = await setup_entry(hass, dry_run=False)
+    await hass.async_block_till_done()
+    state = hass.states.get("climate.room_climate_front_room")
+    assert state.attributes["temperature"] == 20.0
+    assert state.attributes["setpoint_source"] == "fallback"
+    assert state.attributes["hvac_action"] == "idle"
+    assert entry.runtime_data.output.rooms[0].calling is False
+    assert calls_for(hass, "set_temperature", "climate.heating_heat") == []
+
+
+async def test_the_fallback_setpoint_calls_for_heat_when_the_room_is_cold(
+    hass: HomeAssistant,
+) -> None:
+    """The fallback is a real setpoint, and not only a value the panel reads."""
+    await setup_entry(hass, dry_run=False, rooms=[room_subentry(valve_command_interval_seconds=0)])
+    hass.states.async_set("sensor.front_room_temperature", "18.0")
+    await hass.async_block_till_done()
+    state = hass.states.get("climate.room_climate_front_room")
+    assert state.attributes["setpoint_source"] == "fallback"
+    assert state.attributes["hvac_action"] == "heating"
+    boiler = calls_for(hass, "set_temperature", "climate.heating_heat")
+    assert boiler[-1]["temperature"] == 31.0
 
 
 async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
@@ -46,6 +122,7 @@ async def test_the_house_entities_exist(hass: HomeAssistant) -> None:
         "sensor.room_climate_outdoor_temperature",
         "sensor.room_climate_house_temperature",
         "sensor.room_climate_status",
+        "sensor.room_climate_schedule_error",
         "sensor.room_climate_front_room_temperature",
         "sensor.room_climate_front_room_temperature_ema",
         "binary_sensor.room_climate_front_room_calling",

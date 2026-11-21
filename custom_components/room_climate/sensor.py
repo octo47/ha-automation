@@ -42,6 +42,7 @@ async def async_setup_entry(
             OutdoorTemperatureSensor(coordinator),
             HouseTemperatureSensor(coordinator),
             StatusSensor(coordinator),
+            ScheduleErrorSensor(coordinator),
         ]
     )
     for room in coordinator.config.rooms:
@@ -148,6 +149,21 @@ class StatusSensor(HouseSensor):
         """Copy the status of the house."""
         output = self.coordinator.output
         self._attr_native_value = None if output is None else output.status
+
+
+class ScheduleErrorSensor(HouseSensor):
+    """The last fault of the schedule file of the house."""
+
+    _attr_name = "Schedule Error"
+    _attr_icon = "mdi:file-alert"
+
+    def __init__(self, coordinator: RoomClimateCoordinator) -> None:
+        super().__init__(coordinator, "schedule_error", house_device(coordinator))
+
+    @callback
+    def _sync(self) -> None:
+        """Copy the last schedule fault, or nothing when the file is sound."""
+        self._attr_native_value = self.coordinator.schedule_error
 
 
 class RoomTemperatureSensor(HouseSensor):

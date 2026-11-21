@@ -90,6 +90,22 @@ async def test_the_options_form_opens_with_the_house_of_the_entry(hass: HomeAssi
     assert entry.runtime_data.config.lockout_temperature == 21.0
 
 
+async def test_the_options_form_carries_the_fallback_setpoint(hass: HomeAssistant) -> None:
+    """The fallback setpoint is a plain number field, and it survives the panel."""
+    entry = await setup_entry(hass, house_data=house(fallback_setpoint=18.0))
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    fields = probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
+    assert field(fields, "fallback_setpoint")["description"]["suggested_value"] == 18.0
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"fallback_setpoint": 16.0}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.runtime_data.config.fallback_setpoint == 16.0
+
+
 async def test_the_house_entry_reads_its_options_over_its_data(hass: HomeAssistant) -> None:
     """A value in the options answers over a different value in the data."""
     entry = MockConfigEntry(

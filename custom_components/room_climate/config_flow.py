@@ -30,6 +30,7 @@ from .const import (
     CONF_CALIBRATION_SCALE,
     CONF_DEMAND_FALLBACK_SENSORS,
     CONF_DRY_RUN,
+    CONF_FALLBACK_SETPOINT,
     CONF_HYSTERESIS,
     CONF_LOCKOUT_HYSTERESIS,
     CONF_LOCKOUT_TEMPERATURE,
@@ -56,6 +57,7 @@ from .const import (
     DEFAULT_BOILER_ON_TEMPERATURE,
     DEFAULT_CALIBRATION_SCALE,
     DEFAULT_DRY_RUN,
+    DEFAULT_FALLBACK_SETPOINT,
     DEFAULT_HYSTERESIS,
     DEFAULT_LOCKOUT_HYSTERESIS,
     DEFAULT_LOCKOUT_TEMPERATURE,
@@ -67,6 +69,8 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
     DOMAIN,
+    FALLBACK_SETPOINT_MAX,
+    FALLBACK_SETPOINT_MIN,
     SUBENTRY_TYPE_ROOM,
     VALVE_MODE_BOOST,
     VALVE_MODE_MODULATE,
@@ -268,6 +272,9 @@ HOUSE_SCHEMA = probatio.Schema(
         probatio.Required(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): _selector("BooleanSelector"),
         probatio.Required(CONF_MASTER_ENABLED, default=True): _selector("BooleanSelector"),
         probatio.Required(CONF_SIMULATION, default=False): _selector("BooleanSelector"),
+        probatio.Required(CONF_FALLBACK_SETPOINT, default=DEFAULT_FALLBACK_SETPOINT): _number(
+            FALLBACK_SETPOINT_MIN, FALLBACK_SETPOINT_MAX, 0.5, "°C"
+        ),
     }
 )
 

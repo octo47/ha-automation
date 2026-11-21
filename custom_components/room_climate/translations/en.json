@@ -17,7 +17,8 @@
           "update_interval_seconds": "Update interval",
           "dry_run": "Dry run",
           "master_enabled": "Master enable",
-          "simulation": "Simulation house"
+          "simulation": "Simulation house",
+          "fallback_setpoint": "Fallback setpoint"
         }
       }
     },
@@ -120,7 +121,8 @@
           "update_interval_seconds": "Update interval",
           "dry_run": "Dry run",
           "master_enabled": "Master enable",
-          "simulation": "Simulation house"
+          "simulation": "Simulation house",
+          "fallback_setpoint": "Fallback setpoint"
         }
       }
     },

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import pathlib
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -12,6 +14,11 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
+from .const import (
+    SETPOINT_SOURCE_FALLBACK,
+    SETPOINT_SOURCE_MANUAL,
+    SETPOINT_SOURCE_SCHEDULE,
+)
 from .control import (
     decide,
     feed_entity_id,
@@ -20,7 +27,16 @@ from .control import (
     room_lockout_temperature,
     room_outdoor_sources,
 )
-from .models import ControlInput, ControlOutput, HouseConfig, RuntimeRoom
+from .models import ControlInput, ControlOutput, HouseConfig, RoomConfig, RuntimeRoom
+from .schedule import (
+    GROUP_DEFAULT,
+    ScheduleError,
+    ScheduleFile,
+    SetpointResolution,
+    parse_schedule_file,
+    resolve_setpoint,
+    schedule_path_name,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +82,10 @@ class RoomClimateCoordinator:
         self.last_command_at: dict[str, datetime] = {}
         self.master_enabled = config.master_enabled
         self.override_active = False
+        self.schedule: ScheduleFile | None = None
+        self.schedule_error: str | None = None
+        self._schedule_stamp: tuple[int, int] | None = None
+        self._load_error: str | None = None
         self._unsubscribers: list[Callable[[], None]] = []
         self._listeners: list[Callable[[], None]] = []
 
@@ -73,6 +93,11 @@ class RoomClimateCoordinator:
     def data(self) -> ControlOutput | None:
         """The output of the last cycle, for the entities that publish it."""
         return self.output
+
+    @property
+    def schedule_path(self) -> str:
+        """The schedule file of this entry: the house file, or the bench file."""
+        return self.hass.config.path(schedule_path_name(self.config.simulation))
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -130,8 +155,123 @@ class RoomClimateCoordinator:
         """Run one cycle for one state change of a watched entity."""
         self.hass.async_create_task(self.async_recompute())
 
+    def _load_schedule(self) -> str | None:
+        """Read the schedule file when its modification time changed.
+
+        A missing file is not an error: every room has no setpoint. A file that
+        fails to parse keeps the last good schedule. The fault is logged once for
+        each change of the file.
+        """
+        path = self.schedule_path
+        try:
+            stat = os.stat(path)
+        except OSError:
+            self.schedule = None
+            self._schedule_stamp = None
+            self._load_error = None
+            return None
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if stamp == self._schedule_stamp:
+            return self._load_error
+        self._schedule_stamp = stamp
+        try:
+            text = pathlib.Path(path).read_text(encoding="utf-8")
+        except OSError as error:
+            self._load_error = f"the schedule file {path} could not be read: {error}"
+            _LOGGER.error("%s", self._load_error)
+            return self._load_error
+        try:
+            self.schedule = parse_schedule_file(text)
+        except ScheduleError as error:
+            self._load_error = str(error)
+            _LOGGER.error(
+                "the schedule file %s could not be parsed, so the last good schedule "
+                "stays in force: %s",
+                path,
+                error,
+            )
+            return self._load_error
+        self._load_error = None
+        return None
+
+    def _resolve(self, room: RoomConfig, at: datetime) -> tuple[SetpointResolution, str | None]:
+        """Return the schedule setpoint of one room, and a refusal message when any."""
+        try:
+            resolution = resolve_setpoint(
+                self.schedule,
+                room.room_id,
+                at,
+                minimum=room.min_temp,
+                maximum=room.max_temp,
+            )
+        except ScheduleError as error:
+            return SetpointResolution(temperature=None, group=GROUP_DEFAULT), str(error)
+        return resolution, "; ".join(resolution.errors) or None
+
+    def _next_runtimes(self, at: datetime) -> tuple[dict[str, RuntimeRoom], list[str]]:
+        """Give every room the setpoint of the schedule, or the manual override."""
+        runtimes: dict[str, RuntimeRoom] = {}
+        errors: list[str] = []
+        for room in self.config.rooms:
+            previous = self.runtimes.get(room.room_id, RuntimeRoom(room_id=room.room_id))
+            resolution, refusal = self._resolve(room, at)
+            if refusal is not None:
+                errors.append(refusal)
+            manual_holds = previous.manual_target is not None and (
+                previous.manual_until is None or at < previous.manual_until
+            )
+            if manual_holds:
+                target, source = previous.manual_target, SETPOINT_SOURCE_MANUAL
+                manual_target, manual_until = previous.manual_target, previous.manual_until
+            elif resolution.temperature is not None:
+                target, source = resolution.temperature, SETPOINT_SOURCE_SCHEDULE
+                manual_target, manual_until = None, None
+            else:
+                # A room always carries a target, because a thermostat without one
+                # offers the operator no control at all. The house fallback stands in
+                # when the file gives the room nothing.
+                target = self.config.fallback_setpoint
+                source = SETPOINT_SOURCE_FALLBACK
+                manual_target, manual_until = None, None
+            next_change = resolution.next_change
+            runtimes[room.room_id] = previous.model_copy(
+                update={
+                    "target_temperature": target,
+                    "manual_target": manual_target,
+                    "manual_until": manual_until,
+                    "setpoint_source": source,
+                    "schedule_group": resolution.group,
+                    "next_change_at": None if next_change is None else next_change.at,
+                    "next_change_temperature": (
+                        None if next_change is None else next_change.temperature
+                    ),
+                }
+            )
+        return runtimes, errors
+
+    def set_manual_target(self, room_id: str, temperature: float) -> None:
+        """Hold a manual setpoint on one room until the next block of its schedule."""
+        now = dt_util.now()
+        room = next((item for item in self.config.rooms if item.room_id == room_id), None)
+        until: datetime | None = None
+        if room is not None:
+            resolution, _ = self._resolve(room, now)
+            if resolution.next_change is not None:
+                until = resolution.next_change.at
+        previous = self.runtimes.get(room_id, RuntimeRoom(room_id=room_id))
+        self.runtimes[room_id] = previous.model_copy(
+            update={"manual_target": temperature, "manual_until": until}
+        )
+
     async def async_recompute(self) -> ControlOutput:
         """Run one cycle, and either log the commands or apply them."""
+        load_error = self._load_schedule()
+        runtimes, refusals = self._next_runtimes(dt_util.now())
+        self.runtimes = runtimes
+        self.schedule_error = (
+            "; ".join(dict.fromkeys(message for message in (load_error, *refusals) if message))
+            or None
+        )
         temperatures = {
             entity_id: _numeric_state(self.hass, entity_id)
             for entity_id in (
@@ -261,18 +401,15 @@ class RoomClimateCoordinator:
     def _remember(self, output: ControlOutput) -> None:
         """Keep the latch, the averages and the sent values for the next cycle."""
         now = dt_util.utcnow()
-        runtimes: dict[str, RuntimeRoom] = {}
         for command in output.rooms:
             previous = self.runtimes.get(command.room_id, RuntimeRoom(room_id=command.room_id))
-            runtimes[command.room_id] = RuntimeRoom(
-                room_id=command.room_id,
-                target_temperature=previous.target_temperature,
-                hvac_mode=previous.hvac_mode,
-                calling=command.calling,
-                ema_temperature=command.ema_temperature,
-                updated_at=now,
+            self.runtimes[command.room_id] = previous.model_copy(
+                update={
+                    "calling": command.calling,
+                    "ema_temperature": command.ema_temperature,
+                    "updated_at": now,
+                }
             )
-        self.runtimes = runtimes
 
     async def async_release_boiler(self) -> None:
         """Return the boiler to its idle values."""

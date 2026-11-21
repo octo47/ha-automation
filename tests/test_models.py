@@ -35,6 +35,17 @@ def test_a_room_keeps_its_valves_and_weights() -> None:
     assert config.sources[0].weight == 3.0
 
 
+def test_the_house_fallback_setpoint_defaults_to_twenty() -> None:
+    """A room always carries a target, so the house holds a fallback for it."""
+    assert house().fallback_setpoint == 20.0
+
+
+@pytest.mark.parametrize("setpoint", [4.5, 30.5])
+def test_the_fallback_setpoint_is_held_to_five_and_thirty(setpoint: float) -> None:
+    with pytest.raises(ValidationError):
+        house(fallback_setpoint=setpoint)
+
+
 @pytest.mark.parametrize("weight", [0.0, -1.0])
 def test_weight_must_be_positive(weight: float) -> None:
     with pytest.raises(ValidationError):

@@ -18,6 +18,7 @@ from .const import (
     DEFAULT_BOILER_ON_TEMPERATURE,
     DEFAULT_CALIBRATION_SCALE,
     DEFAULT_EMA_SECONDS,
+    DEFAULT_FALLBACK_SETPOINT,
     DEFAULT_HYSTERESIS,
     DEFAULT_LOCKOUT_HYSTERESIS,
     DEFAULT_LOCKOUT_TEMPERATURE,
@@ -28,6 +29,8 @@ from .const import (
     DEFAULT_OUTDOOR_SOURCES,
     DEFAULT_UPDATE_INTERVAL_SECONDS,
     DEFAULT_VALVE_COMMAND_INTERVAL_SECONDS,
+    FALLBACK_SETPOINT_MAX,
+    FALLBACK_SETPOINT_MIN,
     SIM_MARKER,
     SUBENTRY_TYPE_ROOM,
     VALVE_MODE_MODULATE,
@@ -112,6 +115,11 @@ class HouseConfig(BaseModel):
     update_interval_seconds: int = Field(default=DEFAULT_UPDATE_INTERVAL_SECONDS, ge=10, le=600)
     dry_run: bool = True
     master_enabled: bool = True
+    fallback_setpoint: float = Field(
+        default=DEFAULT_FALLBACK_SETPOINT,
+        ge=FALLBACK_SETPOINT_MIN,
+        le=FALLBACK_SETPOINT_MAX,
+    )
     ema_seconds: int = Field(default=DEFAULT_EMA_SECONDS, ge=60, le=10800)
     simulation: bool = False
     rooms: tuple[RoomConfig, ...] = ()
@@ -180,6 +188,12 @@ class RuntimeRoom(BaseModel):
 
     room_id: str
     target_temperature: float | None = None
+    manual_target: float | None = None
+    manual_until: datetime | None = None
+    setpoint_source: Literal["schedule", "manual", "fallback"] = "schedule"
+    schedule_group: str = "default"
+    next_change_at: datetime | None = None
+    next_change_temperature: float | None = None
     hvac_mode: Literal["off", "heat"] = "heat"
     calling: bool = False
     ema_temperature: float | None = None
