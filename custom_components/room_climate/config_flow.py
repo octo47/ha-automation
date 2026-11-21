@@ -36,7 +36,9 @@ from .const import (
     CONF_LOCKOUT_TEMPERATURE,
     CONF_MASTER_ENABLED,
     CONF_MAX_TEMP,
+    CONF_MIN_OFF_MINUTES,
     CONF_MIN_OFF_SECONDS,
+    CONF_MIN_ON_MINUTES,
     CONF_MIN_ON_SECONDS,
     CONF_MIN_TEMP,
     CONF_NAME,
@@ -239,6 +241,40 @@ def weight_schema(labels: Mapping[str, str]) -> probatio.Schema:
 # A simulated house derives the valve and the source from the room id, so its form is the name.
 SIM_ROOM_SCHEMA = probatio.Schema({probatio.Required(CONF_NAME): _selector("TextSelector")})
 
+
+def _minutes_from_seconds(seconds: int) -> int:
+    """Return the whole minute the form suggests for a stored value of seconds.
+
+    The nearest minute, a half minute going to the greater minute.
+    """
+    return (seconds + 30) // 60
+
+
+def _seconds_from_minutes(minutes: Any) -> int:
+    """Return the seconds the entry holds for a form answer of minutes."""
+    return int(minutes) * 60
+
+
+def _boiler_timings(answers: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the house answers with the two boiler floors in the unit of the entry.
+
+    The form asks the two floors in minutes and the entry keeps them in seconds, so
+    the two minute keys are removed and the two second keys take their place.
+    """
+    timings = {
+        key: value
+        for key, value in answers.items()
+        if key not in (CONF_MIN_ON_MINUTES, CONF_MIN_OFF_MINUTES)
+    }
+    for minute_key, second_key in (
+        (CONF_MIN_ON_MINUTES, CONF_MIN_ON_SECONDS),
+        (CONF_MIN_OFF_MINUTES, CONF_MIN_OFF_SECONDS),
+    ):
+        if minute_key in answers:
+            timings[second_key] = _seconds_from_minutes(answers[minute_key])
+    return timings
+
+
 HOUSE_SCHEMA = probatio.Schema(
     {
         probatio.Optional(CONF_NAME): _selector("TextSelector"),
@@ -260,11 +296,11 @@ HOUSE_SCHEMA = probatio.Schema(
         probatio.Required(CONF_LOCKOUT_HYSTERESIS, default=DEFAULT_LOCKOUT_HYSTERESIS): _number(
             0, 10, 0.5, "°C"
         ),
-        probatio.Required(CONF_MIN_ON_SECONDS, default=DEFAULT_MIN_ON_SECONDS): _number(
-            0, 3600, 1, "s"
+        probatio.Required(CONF_MIN_ON_MINUTES, default=DEFAULT_MIN_ON_SECONDS // 60): _number(
+            0, 60, 1, "min"
         ),
-        probatio.Required(CONF_MIN_OFF_SECONDS, default=DEFAULT_MIN_OFF_SECONDS): _number(
-            0, 3600, 1, "s"
+        probatio.Required(CONF_MIN_OFF_MINUTES, default=DEFAULT_MIN_OFF_SECONDS // 60): _number(
+            0, 60, 1, "min"
         ),
         probatio.Required(
             CONF_UPDATE_INTERVAL_SECONDS, default=DEFAULT_UPDATE_INTERVAL_SECONDS
@@ -379,7 +415,7 @@ class RoomClimateConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Create the house entry from the house form."""
         if user_input is not None:
-            config, error = _validate_house({**user_input, CONF_ROOMS: []})
+            config, error = _validate_house({**_boiler_timings(user_input), CONF_ROOMS: []})
             if config is not None:
                 return self.async_create_entry(
                     title=config.name, data=config.model_dump(mode="json")
@@ -589,9 +625,8 @@ class RoomClimateOptionsFlow(OptionsFlowWithConfigEntry):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Edit the house settings, the only thing the options carry."""
         if user_input is not None:
-            config, error = _validate_house(
-                {**self._house_settings(), **user_input, CONF_ROOMS: []}
-            )
+            answers = _boiler_timings({**self._house_settings(), **user_input})
+            config, error = _validate_house({**answers, CONF_ROOMS: []})
             if config is not None:
                 saved = config.model_dump(mode="json")
                 saved.pop(CONF_ROOMS, None)
@@ -608,6 +643,18 @@ class RoomClimateOptionsFlow(OptionsFlowWithConfigEntry):
         return self.add_suggested_values_to_schema(HOUSE_SCHEMA, self._house_settings())
 
     def _house_settings(self) -> dict[str, Any]:
-        """The settings of the house this flow changes."""
+        """The settings of the house this flow changes, with the two floors in minutes.
+
+        The entry holds the two boiler floors in seconds and the house form asks them in
+        minutes, so the two minute keys are added for the form to suggest, and the
+        writers of the flow take them back out.
+        """
         entry = self.hass.config_entries.async_get_entry(self.handler)
-        return house_settings(cast("ConfigEntry", entry))
+        settings: dict[str, Any] = dict(house_settings(cast("ConfigEntry", entry)))
+        settings[CONF_MIN_ON_MINUTES] = _minutes_from_seconds(
+            settings.get(CONF_MIN_ON_SECONDS, DEFAULT_MIN_ON_SECONDS)
+        )
+        settings[CONF_MIN_OFF_MINUTES] = _minutes_from_seconds(
+            settings.get(CONF_MIN_OFF_SECONDS, DEFAULT_MIN_OFF_SECONDS)
+        )
+        return settings

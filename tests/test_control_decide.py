@@ -110,7 +110,7 @@ def test_the_last_room_stopping_turns_the_boiler_off() -> None:
                 "sensor.outdoor": 8.0,
             },
             boiler_on=True,
-            boiler_state_since=NOW - timedelta(minutes=10),
+            boiler_state_since=NOW - timedelta(minutes=30),
         )
     )
     assert output.boiler.turn_on is False
@@ -342,6 +342,13 @@ def test_a_valve_less_room_without_a_reading_stops_the_boiler() -> None:
     assert bathroom.calling is False
     assert bathroom.valve_targets == {}
     assert output.boiler.turn_on is False
+
+
+def test_the_house_defaults_to_thirty_minutes_on_and_ten_minutes_off() -> None:
+    """The house model defaults the two boiler floors to half an hour and ten minutes."""
+    config = HouseConfig()
+    assert config.min_on_seconds == 1800
+    assert config.min_off_seconds == 600
 
 
 @pytest.mark.parametrize(

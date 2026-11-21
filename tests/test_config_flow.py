@@ -164,6 +164,86 @@ async def test_the_options_flow_saves_the_house_settings(hass: HomeAssistant) ->
     assert "rooms" not in result["data"]
 
 
+async def test_the_house_form_asks_the_boiler_floor_in_minutes(hass: HomeAssistant) -> None:
+    """The house form asks the two floors in minutes, and suggests the stored seconds.
+
+    A stored 1800 s is half an hour and a stored 600 s is ten minutes, and the form
+    carries no field of seconds.
+    """
+    entry = await setup_entry(hass, house_data=house(min_on_seconds=1800, min_off_seconds=600))
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    fields = probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
+    names = [item["name"] for item in fields]
+    assert "min_on_minutes" in names
+    assert "min_off_minutes" in names
+    assert "min_on_seconds" not in names
+    assert "min_off_seconds" not in names
+    assert field(fields, "min_on_minutes")["description"]["suggested_value"] == 30
+    assert field(fields, "min_off_minutes")["description"]["suggested_value"] == 10
+
+
+async def test_a_minute_answer_stores_the_boiler_floor_in_seconds(hass: HomeAssistant) -> None:
+    """An answer of 30 and 10 stores the seconds, and no minute key reaches the entry."""
+    entry = await setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"min_on_minutes": 30, "min_off_minutes": 10}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["min_on_seconds"] == 1800
+    assert result["data"]["min_off_seconds"] == 600
+    assert "min_on_minutes" not in result["data"]
+    assert "min_off_minutes" not in result["data"]
+    await hass.async_block_till_done()
+    assert entry.runtime_data.config.min_on_seconds == 1800
+    assert entry.runtime_data.config.min_off_seconds == 600
+
+
+async def test_the_initial_flow_stores_the_boiler_floor_in_seconds(hass: HomeAssistant) -> None:
+    """The first flow stores the two floors as seconds, and no minute key."""
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "boiler_entity": "climate.heating_heat",
+            "boiler_on_temperature": 31.0,
+            "boiler_off_temperature": 15.0,
+            "outdoor_sources": ["sensor.outdoor"],
+            "lockout_temperature": 18.0,
+            "min_on_minutes": 30,
+            "min_off_minutes": 10,
+        },
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["min_on_seconds"] == 1800
+    assert result["data"]["min_off_seconds"] == 600
+    assert "min_on_minutes" not in result["data"]
+    assert "min_off_minutes" not in result["data"]
+
+
+async def test_a_stored_floor_reads_as_the_nearest_whole_minute(hass: HomeAssistant) -> None:
+    """A stored value of seconds is suggested as the nearest minute, a half going up.
+
+    A stored 300 s is five minutes and a stored 330 s is six minutes.
+    """
+    entry = await setup_entry(hass, house_data=house(min_on_seconds=330, min_off_seconds=300))
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    fields = probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
+    assert field(fields, "min_on_minutes")["description"]["suggested_value"] == 6
+    assert field(fields, "min_off_minutes")["description"]["suggested_value"] == 5
+
+
+async def test_a_fresh_house_offers_half_an_hour_and_ten_minutes(hass: HomeAssistant) -> None:
+    """A house with no stored floor suggests the defaults, in minutes."""
+    entry = await setup_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    fields = probatio.to_field_list(result["data_schema"], custom_serializer=cv.custom_serializer)
+    assert field(fields, "min_on_minutes")["description"]["suggested_value"] == 30
+    assert field(fields, "min_off_minutes")["description"]["suggested_value"] == 10
+
+
 async def test_an_options_save_leaves_the_rooms_alone(hass: HomeAssistant) -> None:
     entry = await setup_entry(hass)
     assert hass.states.get("climate.room_climate_front_room") is not None
