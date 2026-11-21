@@ -832,3 +832,5 @@ decision excluded.
     `schedule_error`.
 27. A block that names days applies on those days only, and the block of the previous evening
     holds until the first block of the morning of the next day.
+28. The virtual thermostat answers `climate.turn_on` and `climate.turn_off`, and a room whose valve
+    is unavailable carries a degraded binary sensor in the state `on`.

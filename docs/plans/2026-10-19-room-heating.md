@@ -4205,6 +4205,41 @@ acceptance items 23 to 27.
 
 ---
 
+### Task 20: The interactive surface of a room tells the truth
+
+Found by the operator on 2026-11-21 while clicking the panel: the power button of a room card
+answers `Entity climate.room_climate_sitting_room does not support action climate.turn_off`. The
+entity declares `TARGET_TEMPERATURE` alone, so neither `climate.turn_off` nor `climate.turn_on`
+exists, and the power button of every card of the house is dead.
+
+The same session found two faults of the same kind, where the panel hides what the component knows.
+
+- A room whose only valve is unavailable reports `degraded: true` and `valves_unavailable: 1` among
+  its attributes, and no entity carries either value. On the page such a room looks like a healthy
+  one, and its own card reads `Heat` while the room can heat nothing.
+- The switch `switch.room_climate_boiler_automation` is the master enable of the whole component.
+  Its docstring says so, and its service call sets `coordinator.master_enabled`. Its name promises
+  the boiler alone, so an operator who turns it off to stop the boiler also stops every valve
+  command.
+
+**Files:** `custom_components/room_climate/climate.py` (the features and the two services),
+`custom_components/room_climate/binary_sensor.py` (the degraded sensor),
+`custom_components/room_climate/switch.py` (the name), `strings.json` and `translations/en.json`
+(byte-identical), `docs/room-heating.spec.md` sections 7.1 and 7.2, and the tests.
+
+- [ ] **Step 1: Write the failing tests.** The advertised features carry `TURN_ON` and `TURN_OFF`;
+  `climate.turn_off` leaves the room off and `climate.turn_on` returns it to heat with its previous
+  target; a room with an unavailable valve carries `binary_sensor.room_climate_<room>_degraded` `on`
+  with device class `problem`, and `off` when the valve answers again; the master switch carries the
+  name that matches what it does.
+- [ ] **Step 2: Run the tests to verify they fail.**
+- [ ] **Step 3: Write the change.** Both services map to `async_set_hvac_mode`, so a room keeps one
+  code path for its mode.
+- [ ] **Step 4: Run `make check` to verify the whole suite passes.**
+- [ ] **Step 5: Commit** — `git commit -m "let the panel turn a room off and show a room that cannot heat"`
+
+---
+
 ## Self-review
 
 **Spec coverage:** section 5 (architecture) → tasks 1, 9, 10. Section 5.2 (configuration) →
@@ -4212,7 +4247,7 @@ tasks 2, 11, 16, 17. Section 5.3 (adding a room) → task 16. Section 5.4 (picki
 task 17. Section 6.1 → task 3. Section 6.2 → task 5. Section 6.3 → task 6. Section 6.4 →
 task 7. Section 6.5 → task 8. Section 6.6 → tasks 4, 15. Section 6.7 → tasks 9, 12.
 Section 6.8 → task 17. Section 6.9 → task 18. Section 6.10 → task 19. Section 7.1 to 7.3 →
-tasks 8, 10, 17.
+tasks 8, 10, 17, 20.
 Section 7.4 → tasks 13, 17. Section 8.1 → tasks 13, 14. Section 8.2 → task 14.
 Section 9 → every task.
 
