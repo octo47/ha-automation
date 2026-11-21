@@ -69,9 +69,11 @@ hand, because the component runs no thermal model.
    `climate.heating_heat`.
 7. Watch one full heating cycle per room. The boiler reaches 31 °C when a room calls, and 15 °C
    when the last room stops.
-8. Repoint every Better Thermostat card from `climate.bt_*` to `climate.room_climate_*`. The
-   mapping of the seven rooms is in the repository [README](../README.md), and
-   `dashboard/room-climate.yaml` is a starting view.
+8. Repoint every Better Thermostat card from `climate.bt_*` to `climate.room_climate_*`. Each room
+   of this house answers with one `climate.room_climate_<room>` thermostat, so the mapping is the
+   room name. The mapping of the house is private and the repository carries none of it: read the
+   rooms and their entity ids from the integration page, or from the attributes of
+   `climate.room_climate_<room>`. `dashboard/room-climate.yaml` is a starting view.
 9. Remove every Better Thermostat entry from **Settings**, then **Devices and services**.
 10. Remove Better Thermostat from HACS.
 

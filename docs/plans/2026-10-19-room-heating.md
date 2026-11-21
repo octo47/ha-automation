@@ -3980,6 +3980,39 @@ git commit -m "read the device class of a source from its state"
 
 ---
 
+### Task 16e: The label of a picker entry
+
+A fault of the live instance, seen on 2026-11-20 in the room form of the house. The source picker
+offers 44 sensors, and the label of each entry is the name of the entity. The sensors of this house
+come from MQTT devices, and their names are the names the vendor gives them: ten of the entries read
+`Temperature`, four more read `Temperature EMA` or `Temperature EMA 1h`, and the labels of two
+different sensors are the same. The operator cannot tell them apart in the panel, because the value
+behind a row is hidden until the row is chosen and the entity id is what distinguishes them.
+
+The same applies to the valve picker (one label is the entity id of a valve whose device carries no
+name) and to the weights step, which labels a field with the name of its source.
+
+**Rule:** a label of a picker entry names the entity in the house and not only the entity. The label
+is the area of the entity, then the name of its device when the entity carries a generic name, then
+the name of the entity; and two entries that would carry the same label fall back to the entity id,
+so no two rows of one picker read the same.
+
+**Files:**
+- Modify: `custom_components/room_climate/discovery.py`, `config_flow.py`
+- Modify: `tests/test_discovery.py`, `tests/test_subentry_flow.py`
+
+- [ ] **Step 1: Write the failing tests.** Two sensors with the same name and different areas must
+  carry different labels; a sensor whose device carries a name must name it; a valve whose device
+  carries no name must fall back to its entity id; the weights step of two sources must label the
+  two fields differently.
+- [ ] **Step 2: Run the tests to verify they fail.**
+- [ ] **Step 3: Write the change**, one function that builds the label of a candidate, used by the
+  valve picker, the source picker and the weights step.
+- [ ] **Step 4: Run `make check` to verify it passes.**
+- [ ] **Step 5: Commit** — `git commit -m "name a picker entry so the operator can tell it apart"`
+
+---
+
 ### Task 17: The humidity of a room, and the source pickers
 
 The spec's sections 3.5, 5.4, 6.8 and 7.2. A room reads temperature sources and humidity
